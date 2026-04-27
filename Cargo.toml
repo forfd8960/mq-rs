@@ -6,5 +6,6 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+thiserror = "2.0.18"
 tokio = { version = "1.52.1", features = ["full"] }
 uuid = { version = "1.23.1", features = ["v4"] }

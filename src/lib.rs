@@ -1,6 +1,7 @@
 pub mod channel;
 pub mod client;
 pub mod consumer;
+pub mod errors;
 pub mod message;
 pub mod mq;
 pub mod producer;
