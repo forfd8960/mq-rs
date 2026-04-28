@@ -72,8 +72,10 @@ impl MQ {
 }
 
 pub async fn start_queue(mq: Arc<Mutex<MQ>>, tcp_addr: &str) -> Result<(), MQError> {
+    println!("starting queue at: {}", tcp_addr);
     let listener = TcpListener::bind(tcp_addr).await?;
 
+    println!("queue initilized, waiting connection");
     loop {
         // accept a new connection
         let (stream, addr) = listener.accept().await?;

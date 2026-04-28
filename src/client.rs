@@ -6,9 +6,14 @@ use tokio::{
     net::TcpStream,
     sync::{mpsc, Mutex},
 };
-use tokio_util::codec::{FramedRead, LinesCodec};
+use tokio_util::codec::{FramedRead, LengthDelimitedCodec, LinesCodec};
 
-use crate::{channel::Channel, errors::MQError, mq::MQ, protocol::{Event, FrameType}};
+use crate::{
+    channel::Channel,
+    errors::MQError,
+    mq::MQ,
+    protocol::{Event, FrameType},
+};
 
 pub type ClientID = u64;
 const MAGIC: &'static str = "RQV0";
@@ -44,28 +49,44 @@ impl Client {
         let stream = Arc::try_unwrap(self.stream.clone())
             .map_err(|_| MQError::Custom("Failed to unwrap Arc".to_string()))?
             .into_inner();
+
         let (read_half, write_half) = stream.into_split();
 
-        let mut framed_read = FramedRead::new(read_half, LinesCodec::new());
-        let mut framed_write = FramedRead::new(write_half, LinesCodec::new());
+        let mut r_builder = LengthDelimitedCodec::builder();
+        let length_decoder_builder = r_builder
+            .big_endian()
+            .length_field_offset(0)
+            .length_field_type::<u32>()
+            .length_field_length(4);
+
+        let mut w_builder = LengthDelimitedCodec::builder();
+        let length_encoder_builder = w_builder
+            .big_endian()
+            .length_field_offset(0)
+            .length_field_type::<u32>()
+            .length_field_length(4);
+
+        let mut framed_read = FramedRead::new(read_half, length_decoder_builder.new_codec());
+        let mut framed_write = FramedRead::new(write_half, length_encoder_builder.new_codec());
 
         loop {
             match framed_read.next().await {
-                Some(Ok(data)) => {
-                    
-                },
-                Some(Err(e)) => {},
-                None => break
+                Some(Ok(data)) => {}
+                Some(Err(e)) => {}
+                None => break,
             }
         }
-
 
         Ok(())
     }
 
-    async fn handle_cmd(&mut self, ev: Event) -> Result<(), MQError> {
+    async fn handle_event(&mut self, ev: Event) -> Result<(), MQError> {
         match ev {
-            Event::PUB { topic, channel, msg } => todo!(),
+            Event::PUB {
+                topic,
+                channel,
+                msg,
+            } => todo!(),
             Event::SUB { topic, channel } => todo!(),
         }
     }

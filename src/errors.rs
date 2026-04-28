@@ -10,5 +10,8 @@ pub enum MQError {
     Custom(String),
 
     #[error("unknown event: {0}")]
-    UnknowEvent(String)
+    UnknowEvent(String),
+
+    #[error("invalid event: {0}")]
+    BadEventPayload(String),
 }
