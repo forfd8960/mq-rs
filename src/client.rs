@@ -12,7 +12,7 @@ use crate::{
     channel::Channel,
     errors::MQError,
     mq::MQ,
-    protocol::{Event, FrameType},
+    protocol::{Event, FrameType, decode_line_to_event},
 };
 
 pub type ClientID = u64;
@@ -28,7 +28,7 @@ pub struct Client {
 }
 
 impl Client {
-    pub async fn handle_conn(&self) -> Result<(), MQError> {
+    pub async fn handle_conn(&mut self) -> Result<(), MQError> {
         let mut buf = vec![0u8; 4];
         let n = {
             let mut stream = self.stream.lock().await;
@@ -71,7 +71,10 @@ impl Client {
 
         loop {
             match framed_read.next().await {
-                Some(Ok(data)) => {}
+                Some(Ok(data)) => {
+                    let event = decode_line_to_event(data)?;
+                    self.handle_event(event).await;
+                }
                 Some(Err(e)) => {}
                 None => break,
             }
@@ -86,9 +89,23 @@ impl Client {
                 topic,
                 channel,
                 msg,
-            } => todo!(),
-            Event::SUB { topic, channel } => todo!(),
+            } => self.handle_pub(&topic, &channel, msg).await,
+            Event::SUB { topic, channel } => self.handle_sub(&topic, &channel).await,
         }
+    }
+
+    async fn handle_sub(&mut self, topic_name: &str, channel_name: &str) -> Result<(), MQError> {
+        let mut mq = self.mq.lock().await;
+        mq.topic_add_client(self.id, topic_name, channel_name).await
+    }
+
+    async fn handle_pub(
+        &mut self,
+        topic: &str,
+        channel: &str,
+        msg: Vec<u8>,
+    ) -> Result<(), MQError> {
+        Ok(())
     }
 }
 

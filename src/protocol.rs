@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, Mutex};
-use tokio_util::bytes::{Bytes, BytesMut};
+use tokio::sync::Mutex;
+use tokio_util::bytes::BytesMut;
 
 use crate::client::Client;
 use crate::{errors::MQError, mq::MQ};
@@ -53,7 +53,7 @@ async fn tcp_handler(stream: TcpStream, mq: Arc<Mutex<MQ>>) -> Result<(), MQErro
         q.incr_client_id_seq()
     };
 
-    let client = new_client(stream, mq, c_id).await;
+    let mut client = new_client(stream, mq, c_id).await;
     client.handle_conn().await
 }
 
@@ -105,8 +105,6 @@ fn bytes_to_string(bs: &[u8]) -> Result<String, MQError> {
 
 #[cfg(test)]
 mod tests {
-    use tokio_util::bytes::BufMut;
-
     use super::*;
 
     #[test]

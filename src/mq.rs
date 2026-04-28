@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    rc::Rc,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -13,7 +12,7 @@ use tokio::{
     sync::Mutex,
 };
 
-use crate::{client::Client, errors::MQError, protocol::tcp_handle, topic::Topic};
+use crate::{channel::Channel, client::{Client, ClientID}, errors::MQError, topic::Topic};
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -46,6 +45,8 @@ pub struct MQ {
     pub client_id_seq: u64,
     pub opts: Options,
     pub topic_map: HashMap<String, Topic>,
+    pub clients: HashMap<ClientID, Client>,
+    pub channels: HashMap<String, Channel>
 }
 
 impl MQ {
@@ -55,6 +56,8 @@ impl MQ {
             client_id_seq: 0,
             opts,
             topic_map: HashMap::new(),
+            clients: HashMap::new(),
+            channels: HashMap::new(),
         })
     }
 
@@ -68,6 +71,57 @@ impl MQ {
 
     pub fn get_topic(&self, name: &str) -> Option<&Topic> {
         self.topic_map.get(name)
+    }
+
+    pub fn create_topic(&mut self, t: Topic) -> Result<(), MQError> {
+        let name = t.name.clone();
+        if let Some(_) = self.get_topic(&name) {
+            return Err(MQError::TopicAlreadyExists(name));
+        }
+
+        self.topic_map.insert(name ,t);
+        Ok(())
+    }
+
+    pub fn create_client(&mut self, c_id: ClientID, client: Client) -> Result<(), MQError> {
+        if let Some(_) = self.clients.get(&c_id) {
+            return Ok(());
+        }
+
+        self.clients.insert(c_id ,client);
+        Ok(())
+    }
+
+    pub fn create_channel(&mut self, chan: Channel) -> Result<(), MQError> {
+        let name = chan.name.clone();
+        if let Some(_) = self.channels.get(&name) {
+            return Ok(());
+        }
+
+        self.channels.insert(name,chan);
+        Ok(())
+    }
+
+    pub fn get_client(&self, c_id: ClientID) -> Option<&Client> {
+        self.clients.get(&c_id)
+    }
+
+    pub async fn topic_add_client(&mut self, c_id: ClientID, t: &str, chan: &str) -> Result<(), MQError> {
+        let topic = self.topic_map.get_mut(t);
+        match topic {
+            Some(t) => {
+                t.add_client(c_id, chan).await
+            }
+            None => return Err(MQError::TopicNotFound(t.to_string()))
+        }
+    }
+
+    pub fn add_client_to_chan(&mut self, chan_name: &str, c_id: ClientID) -> Result<(), MQError> {
+        let chan = self.channels.get_mut(chan_name);
+        match chan {
+            Some(ch) => ch.add_client(c_id),
+            None => Ok(())
+        }
     }
 }
 
@@ -97,7 +151,7 @@ async fn tcp_handler(stream: TcpStream, mq: Arc<Mutex<MQ>>) -> Result<(), MQErro
         q.incr_client_id_seq()
     };
 
-    let client = new_client(stream, mq, c_id).await;
+    let mut client = new_client(stream, mq, c_id).await;
     client.handle_conn().await
 }
 

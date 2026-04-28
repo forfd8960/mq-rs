@@ -14,4 +14,10 @@ pub enum MQError {
 
     #[error("invalid event: {0}")]
     BadEventPayload(String),
+
+    #[error("topic: {0} not found")]
+    TopicNotFound(String),
+
+    #[error("topic: {0} exists")]
+    TopicAlreadyExists(String),
 }
