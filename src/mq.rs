@@ -34,7 +34,7 @@ pub struct MQ {
     // clientIDSequence int64
     pub client_id_seq: u64,
     pub opts: Options,
-    pub topic_map: HashMap<String, Arc<Mutex<Topic>>>,
+    pub topic_map: HashMap<String, Topic>,
 }
 
 impl MQ {
@@ -47,5 +47,11 @@ impl MQ {
         })
     }
 
-    pub async fn start_queue(&self) {}
+    pub fn get_topic(&self, name: &str) -> Option<&Topic> {
+        self.topic_map.get(name)
+    }
+
+    pub async fn start_queue(&self) {
+
+    }
 }

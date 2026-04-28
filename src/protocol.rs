@@ -1,12 +1,11 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
 
 use crate::channel::Channel;
-use crate::client::Client;
+use crate::client::{self, Client};
 use crate::{errors::MQError, mq::MQ};
 
 /*
@@ -18,6 +17,18 @@ const (
 */
 #[derive(Debug, Clone, PartialEq)]
 pub struct FrameType(pub u8);
+
+pub enum Event {
+    PUB {
+        topic: String,
+        channel: String,
+        msg: String,
+    },
+    SUB {
+        topic: String,
+        channel: String,
+    },
+}
 
 #[derive(Debug)]
 pub struct Protocol {
@@ -43,6 +54,7 @@ impl Protocol {
         Client {
             id: counter.load(Ordering::SeqCst),
             stream: Arc::new(Mutex::new(tcp_stream)),
+            mq: Arc::new(Mutex::new(mq)),
             sub_event_chan: None,
         }
     }
@@ -65,8 +77,47 @@ pub async fn tcp_handle(listener: TcpListener, mq: Arc<Mutex<MQ>>) -> Result<(),
     }
 }
 
-async fn tcp_handler(stream: TcpStream, mq: Arc<Mutex<MQ>>) -> Result<(), MQError> {
-    let prot = Protocol::new(mq);
-    let client = prot.new_client(stream).await;
+/*
+let counter = AtomicU64::new(mq.client_id_seq);
+        // atomic increment, returns previous value
+        counter.fetch_add(1, Ordering::SeqCst);
+*/
+
+async fn tcp_handler(stream: TcpStream, mq: Arc<Mutex<MQ>>, client_id: u64) -> Result<(), MQError> {
+    let client = new_client(stream, mq, client_id).await;
     client.handle_conn().await
+}
+
+pub async fn new_client(tcp_stream: TcpStream, mq: Arc<Mutex<MQ>>, client_id: u64) -> Client {
+    Client {
+        id: client_id,
+        stream: Arc::new(Mutex::new(tcp_stream)),
+        mq,
+        sub_event_chan: None,
+    }
+}
+
+pub fn decode_line_to_event(line: String) -> Result<Event, MQError> {
+    let parts: Vec<&str> = line.split(" ").into_iter().collect();
+    match parts[0] {
+        "PUB" => {
+            let topic = parts[1];
+            let channel = parts[2];
+            let msg = parts[3];
+            Ok(Event::PUB {
+                topic: topic.to_string(),
+                channel: channel.to_string(),
+                msg: msg.to_string(),
+            })
+        }
+        "SUB" => {
+            let topic = parts[1];
+            let channel = parts[2];
+            Ok(Event::SUB {
+                topic: topic.to_string(),
+                channel: channel.to_string(),
+            })
+        }
+        _ => Err(MQError::UnknowEvent(parts[0].to_string())),
+    }
 }
