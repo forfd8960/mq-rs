@@ -1,11 +1,9 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
 
-use crate::channel::Channel;
-use crate::client::{self, Client};
+use crate::client::Client;
 use crate::{errors::MQError, mq::MQ};
 
 /*
@@ -30,36 +28,6 @@ pub enum Event {
     },
 }
 
-#[derive(Debug)]
-pub struct Protocol {
-    pub mq: Arc<Mutex<MQ>>,
-    pub channel_sender: mpsc::Sender<Channel>,
-}
-
-impl Protocol {
-    pub fn new(mq: Arc<Mutex<MQ>>) -> Self {
-        let (tx, _) = mpsc::channel(1000);
-        Self {
-            mq,
-            channel_sender: tx,
-        }
-    }
-
-    pub async fn new_client(&self, tcp_stream: TcpStream) -> Client {
-        let mq = self.mq.lock().await;
-
-        let counter = AtomicU64::new(mq.client_id_seq);
-        // atomic increment, returns previous value
-        counter.fetch_add(1, Ordering::SeqCst);
-        Client {
-            id: counter.load(Ordering::SeqCst),
-            stream: Arc::new(Mutex::new(tcp_stream)),
-            mq: Arc::new(Mutex::new(mq)),
-            sub_event_chan: None,
-        }
-    }
-}
-
 pub async fn tcp_handle(listener: TcpListener, mq: Arc<Mutex<MQ>>) -> Result<(), MQError> {
     loop {
         // accept a new connection
@@ -77,14 +45,13 @@ pub async fn tcp_handle(listener: TcpListener, mq: Arc<Mutex<MQ>>) -> Result<(),
     }
 }
 
-/*
-let counter = AtomicU64::new(mq.client_id_seq);
-        // atomic increment, returns previous value
-        counter.fetch_add(1, Ordering::SeqCst);
-*/
+async fn tcp_handler(stream: TcpStream, mq: Arc<Mutex<MQ>>) -> Result<(), MQError> {
+    let c_id = {
+        let mut q = mq.lock().await;
+        q.incr_client_id_seq()
+    };
 
-async fn tcp_handler(stream: TcpStream, mq: Arc<Mutex<MQ>>, client_id: u64) -> Result<(), MQError> {
-    let client = new_client(stream, mq, client_id).await;
+    let client = new_client(stream, mq, c_id).await;
     client.handle_conn().await
 }
 

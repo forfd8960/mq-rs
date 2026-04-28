@@ -1,8 +1,19 @@
-use std::{collections::HashMap, rc::Rc, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    rc::Rc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
-use tokio::{net::TcpListener, sync::Mutex};
+use tokio::{
+    net::{TcpListener, TcpStream},
+    sync::Mutex,
+};
 
-use crate::{errors::MQError, topic::Topic};
+use crate::{client::Client, errors::MQError, protocol::tcp_handle, topic::Topic};
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -29,7 +40,7 @@ impl Options {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct MQ {
     // clientIDSequence int64
     pub client_id_seq: u64,
@@ -38,7 +49,7 @@ pub struct MQ {
 }
 
 impl MQ {
-    pub async fn new(options: Options) -> Result<Self, MQError> {
+    pub fn new(options: Options) -> Result<Self, MQError> {
         let opts = options.clone();
         Ok(Self {
             client_id_seq: 0,
@@ -47,11 +58,52 @@ impl MQ {
         })
     }
 
+    pub fn incr_client_id_seq(&mut self) -> u64 {
+        let counter = AtomicU64::new(self.client_id_seq);
+        // atomic increment, returns previous value
+        counter.fetch_add(1, Ordering::SeqCst);
+        self.client_id_seq = counter.load(Ordering::SeqCst);
+        self.client_id_seq
+    }
+
     pub fn get_topic(&self, name: &str) -> Option<&Topic> {
         self.topic_map.get(name)
     }
+}
 
-    pub async fn start_queue(&self) {
+pub async fn start_queue(mq: Arc<Mutex<MQ>>, tcp_addr: &str) -> Result<(), MQError> {
+    let listener = TcpListener::bind(tcp_addr).await?;
 
+    loop {
+        // accept a new connection
+        let (stream, addr) = listener.accept().await?;
+        println!("accepted connection from {}", addr);
+
+        let mq_clone = mq.clone();
+        // spawn a task to handle this client loop
+        tokio::spawn(async move {
+            if let Err(e) = tcp_handler(stream, mq_clone).await {
+                eprintln!("client {} error: {}", addr, e);
+            }
+        });
+    }
+}
+
+async fn tcp_handler(stream: TcpStream, mq: Arc<Mutex<MQ>>) -> Result<(), MQError> {
+    let c_id = {
+        let mut q = mq.lock().await;
+        q.incr_client_id_seq()
+    };
+
+    let client = new_client(stream, mq, c_id).await;
+    client.handle_conn().await
+}
+
+pub async fn new_client(tcp_stream: TcpStream, mq: Arc<Mutex<MQ>>, client_id: u64) -> Client {
+    Client {
+        id: client_id,
+        stream: Arc::new(Mutex::new(tcp_stream)),
+        mq,
+        sub_event_chan: None,
     }
 }
