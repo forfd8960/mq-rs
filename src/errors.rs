@@ -20,4 +20,7 @@ pub enum MQError {
 
     #[error("topic: {0} exists")]
     TopicAlreadyExists(String),
+
+    #[error("bad protocol")]
+    BadProtocol,
 }

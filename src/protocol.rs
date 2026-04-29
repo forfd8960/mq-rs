@@ -4,7 +4,6 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio_util::bytes::BytesMut;
 
-use crate::client::Client;
 use crate::{errors::MQError, mq::MQ};
 
 /*
@@ -15,7 +14,35 @@ const (
 )
 */
 #[derive(Debug, Clone, PartialEq)]
-pub struct FrameType(pub u8);
+pub enum FrameType {
+    Response,
+    Error,
+    Message,
+    Unknown
+}
+
+impl From<u32> for FrameType {
+    fn from(value: u32) -> Self {
+        match value {
+            0 => FrameType::Response,
+            1 => FrameType::Error,
+            2 => FrameType::Message,
+            _ => FrameType::Unknown,
+        }
+    } 
+}
+
+impl From<FrameType> for u32 {
+    fn from(value: FrameType) -> Self {
+        match value {
+            FrameType::Response => 0,
+            FrameType::Error => 1,
+            FrameType::Message => 2,
+            FrameType::Unknown => u32::MAX,
+        }
+    } 
+}
+
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
@@ -28,42 +55,6 @@ pub enum Event {
         topic: String,
         channel: String,
     },
-}
-
-pub async fn tcp_handle(listener: TcpListener, mq: Arc<Mutex<MQ>>) -> Result<(), MQError> {
-    loop {
-        // accept a new connection
-        let (stream, addr) = listener.accept().await?;
-        println!("accepted connection from {}", addr);
-
-        let mq_clone = mq.clone();
-
-        // spawn a task to handle this client loop
-        tokio::spawn(async move {
-            if let Err(e) = tcp_handler(stream, mq_clone).await {
-                eprintln!("client {} error: {}", addr, e);
-            }
-        });
-    }
-}
-
-async fn tcp_handler(stream: TcpStream, mq: Arc<Mutex<MQ>>) -> Result<(), MQError> {
-    let c_id = {
-        let mut q = mq.lock().await;
-        q.incr_client_id_seq()
-    };
-
-    let mut client = new_client(stream, mq, c_id).await;
-    client.handle_conn().await
-}
-
-pub async fn new_client(tcp_stream: TcpStream, mq: Arc<Mutex<MQ>>, client_id: u64) -> Client {
-    Client {
-        id: client_id,
-        stream: Arc::new(Mutex::new(tcp_stream)),
-        mq,
-        sub_event_chan: None,
-    }
 }
 
 pub fn decode_line_to_event(payload: BytesMut) -> Result<Event, MQError> {
