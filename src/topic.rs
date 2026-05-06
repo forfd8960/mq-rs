@@ -66,4 +66,8 @@ impl Topic {
 
         Ok(())
     }
+
+    pub fn put_message(&self, msg: Message) {
+        self.channel_msg_sender.send(msg);
+    }
 }

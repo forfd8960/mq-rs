@@ -23,4 +23,7 @@ pub enum MQError {
 
     #[error("bad protocol")]
     BadProtocol,
+
+    #[error("bad response: {0}")]
+    BadResponse(String),
 }

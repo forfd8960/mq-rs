@@ -9,10 +9,17 @@ use std::{
 
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::Mutex,
+    sync::{broadcast, mpsc, Mutex},
+    time::sleep,
 };
 
-use crate::{channel::Channel, client::{Client, ClientID}, errors::MQError, topic::Topic};
+use crate::{
+    channel::Channel,
+    client::{Client, ClientID},
+    errors::MQError,
+    message::Message,
+    topic::Topic,
+};
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -46,7 +53,7 @@ pub struct MQ {
     pub opts: Options,
     pub topic_map: HashMap<String, Topic>,
     pub clients: HashMap<ClientID, Client>,
-    pub channels: HashMap<String, Channel>
+    pub channels: HashMap<String, Channel>,
 }
 
 impl MQ {
@@ -79,7 +86,7 @@ impl MQ {
             return Err(MQError::TopicAlreadyExists(name));
         }
 
-        self.topic_map.insert(name ,t);
+        self.topic_map.insert(name, t);
         Ok(())
     }
 
@@ -88,7 +95,7 @@ impl MQ {
             return Ok(());
         }
 
-        self.clients.insert(c_id ,client);
+        self.clients.insert(c_id, client);
         Ok(())
     }
 
@@ -98,7 +105,7 @@ impl MQ {
             return Ok(());
         }
 
-        self.channels.insert(name,chan);
+        self.channels.insert(name, chan);
         Ok(())
     }
 
@@ -106,13 +113,16 @@ impl MQ {
         self.clients.get(&c_id)
     }
 
-    pub async fn topic_add_client(&mut self, c_id: ClientID, t: &str, chan: &str) -> Result<(), MQError> {
+    pub async fn topic_add_client(
+        &mut self,
+        c_id: ClientID,
+        t: &str,
+        chan: &str,
+    ) -> Result<(), MQError> {
         let topic = self.topic_map.get_mut(t);
         match topic {
-            Some(t) => {
-                t.add_client(c_id, chan).await
-            }
-            None => return Err(MQError::TopicNotFound(t.to_string()))
+            Some(t) => t.add_client(c_id, chan).await,
+            None => return Err(MQError::TopicNotFound(t.to_string())),
         }
     }
 
@@ -120,7 +130,7 @@ impl MQ {
         let chan = self.channels.get_mut(chan_name);
         match chan {
             Some(ch) => ch.add_client(c_id),
-            None => Ok(())
+            None => Ok(()),
         }
     }
 }
@@ -151,15 +161,6 @@ async fn tcp_handler(stream: TcpStream, mq: Arc<Mutex<MQ>>) -> Result<(), MQErro
         q.incr_client_id_seq()
     };
 
-    let mut client = new_client(stream, mq, c_id).await;
+    let mut client = Client::new(c_id, stream, mq);
     client.handle_conn().await
-}
-
-pub async fn new_client(tcp_stream: TcpStream, mq: Arc<Mutex<MQ>>, client_id: u64) -> Client {
-    Client {
-        id: client_id,
-        stream: Arc::new(Mutex::new(tcp_stream)),
-        mq,
-        sub_event_chan: None,
-    }
 }

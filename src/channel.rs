@@ -2,9 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use tokio::sync::{broadcast, Mutex};
 
-use crate::{
-    client::ClientID, errors::MQError, message::Message, mq::MQ
-};
+use crate::{client::ClientID, errors::MQError, message::Message, mq::MQ};
 
 // channel is the intermedia layer which hold the clients and messages
 #[derive(Debug)]
