@@ -14,7 +14,7 @@ use crate::{
     channel::Channel,
     errors::MQError,
     message::{encode_msg, Message},
-    mq::MQ,
+    mq::ArcMQ,
     protocol::{build_r_w_codec, decode_line_to_event, Event, FrameType},
 };
 
@@ -30,14 +30,14 @@ pub enum EventResp {
 pub struct Client {
     pub id: ClientID,
     pub stream: Arc<Mutex<TcpStream>>,
-    pub mq: Arc<Mutex<MQ>>,
+    pub mq: ArcMQ,
     pub sub_chan: Arc<RwLock<Option<Channel>>>,
     event_sender: mpsc::Sender<EventResp>,
     event_receiver: Arc<RwLock<mpsc::Receiver<EventResp>>>,
 }
 
 impl Client {
-    pub fn new(client_id: u64, tcp_stream: TcpStream, mq: Arc<Mutex<MQ>>) -> Self {
+    pub fn new(client_id: u64, tcp_stream: TcpStream, mq: ArcMQ) -> Self {
         let (tx, rx) = mpsc::channel::<EventResp>(1000);
 
         Self {
@@ -82,7 +82,7 @@ impl Client {
             return Ok(());
         }
 
-        self.message_pump(self.event_sender.clone()).await;
+        self.message_pump().await;
         self.handle_stream().await?;
 
         Ok(())
@@ -165,7 +165,7 @@ impl Client {
         topic_name: &str,
         channel_name: &str,
     ) -> Result<EventResp, MQError> {
-        let mut mq = self.mq.lock().await;
+        let mut mq = self.mq.write().await;
         let _ = mq
             .topic_add_client(self.id, topic_name, channel_name)
             .await?;
@@ -176,7 +176,7 @@ impl Client {
         // 1. find the topic
         // 2. send the message to the topic message chan
 
-        let mq = self.mq.lock().await;
+        let mq = self.mq.read().await;
         match mq.get_topic(topic) {
             Some(t) => {
                 t.put_message(Message::new(msg));
@@ -186,8 +186,9 @@ impl Client {
         }
     }
 
-    async fn message_pump(&mut self, event_sender: mpsc::Sender<EventResp>) {
+    async fn message_pump(&self) {
         let chan_clone = self.sub_chan.clone();
+        let ev_sender = self.event_sender.clone();
 
         tokio::spawn(async move {
             let mut tick = time::interval(Duration::from_millis(500));
@@ -208,7 +209,7 @@ impl Client {
                                 match chan_msg_res {
                                     Ok(chan_msg) => {
                                         println!("received msg: {:?}", chan_msg);
-                                        event_sender.send(EventResp::Msg(encode_msg(chan_msg))).await;
+                                        let _ = ev_sender.send(EventResp::Msg(encode_msg(chan_msg))).await;
                                     },
                                     Err(e) => {
                                         eprintln!("recv failed: {}", e);

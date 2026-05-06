@@ -1,27 +1,22 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::broadcast;
 
-use crate::{client::ClientID, errors::MQError, message::Message, mq::MQ};
+use crate::{client::ClientID, errors::MQError, message::Message, mq::ArcMQ};
 
 // channel is the intermedia layer which hold the clients and messages
 #[derive(Debug)]
 pub struct Channel {
     pub name: String,
     pub topic: String,
-    pub mq: Arc<Mutex<MQ>>,
+    pub mq: ArcMQ,
     // topic broadcasr message to channels
     pub memory_msg_chan: broadcast::Receiver<Message>,
     pub clients: HashMap<ClientID, ()>,
 }
 
 impl Channel {
-    pub fn new(
-        name: &str,
-        topic: &str,
-        mq: Arc<Mutex<MQ>>,
-        rx: broadcast::Receiver<Message>,
-    ) -> Self {
+    pub fn new(name: &str, topic: &str, mq: ArcMQ, rx: broadcast::Receiver<Message>) -> Self {
         Self {
             name: name.to_string(),
             topic: topic.to_string(),

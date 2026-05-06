@@ -7,3 +7,4 @@ pub mod mq;
 pub mod producer;
 pub mod protocol;
 pub mod topic;
+pub mod http_server;

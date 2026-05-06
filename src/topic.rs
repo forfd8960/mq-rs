@@ -2,14 +2,14 @@ use std::{collections::HashMap, sync::Arc};
 
 use tokio::sync::{broadcast, mpsc, Mutex};
 
-use crate::{channel::Channel, client::ClientID, errors::MQError, message::Message, mq::MQ};
+use crate::{channel::Channel, client::ClientID, errors::MQError, message::Message, mq::{ArcMQ, MQ}};
 
 pub type MsgSender = mpsc::Sender<Message>;
 
 #[derive(Debug)]
 pub struct Topic {
     pub name: String,
-    pub mq: Arc<Mutex<MQ>>,
+    pub mq: ArcMQ,
     pub msg_count: u64,
     pub msg_size: u64,
 
@@ -27,7 +27,7 @@ pub struct Topic {
 }
 
 impl Topic {
-    pub fn new(name: &str, mq: Arc<Mutex<MQ>>, msg_cap: usize) -> Self {
+    pub fn new(name: &str, mq: ArcMQ, msg_cap: usize) -> Self {
         let (msg_chan_sender, msg_chan_recv) = mpsc::channel::<Message>(msg_cap);
         let (chan_msg_chan_sender, _) = broadcast::channel::<Message>(msg_cap);
         Self {
@@ -48,7 +48,7 @@ impl Topic {
         let chan = self.chan_map.get(channel);
         match chan {
             Some(_) => {
-                let mut mq = self.mq.lock().await;
+                let mut mq = self.mq.write().await;
                 let _ = mq.add_client_to_chan(channel, c_id);
             }
             None => {
@@ -58,7 +58,7 @@ impl Topic {
                 let mut chan = Channel::new(channel, &topic_name, mq_c, rx);
                 let _ = chan.add_client(c_id);
 
-                let mut mq = self.mq.lock().await;
+                let mut mq = self.mq.write().await;
                 let _ = mq.create_channel(chan);
                 self.chan_map.insert(channel.to_string(), ());
             }

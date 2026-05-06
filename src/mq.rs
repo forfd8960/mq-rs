@@ -9,17 +9,19 @@ use std::{
 
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::{broadcast, mpsc, Mutex},
+    sync::{Mutex, RwLock, broadcast, mpsc},
     time::sleep,
 };
 
 use crate::{
     channel::Channel,
-    client::{Client, ClientID},
+    client::{self, Client, ClientID},
     errors::MQError,
     message::Message,
-    topic::Topic,
+    topic::{self, Topic},
 };
+
+pub type ArcMQ = Arc<RwLock<MQ>>;
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -80,6 +82,10 @@ impl MQ {
         self.topic_map.get(name)
     }
 
+    pub fn get_topics(&self) -> Vec<&Topic> {
+        self.topic_map.iter().map(|(_, t)| t).collect()
+    }
+
     pub fn create_topic(&mut self, t: Topic) -> Result<(), MQError> {
         let name = t.name.clone();
         if let Some(_) = self.get_topic(&name) {
@@ -113,6 +119,42 @@ impl MQ {
         self.clients.get(&c_id)
     }
 
+    pub fn get_channels(&self, topic_name: &str) -> Vec<&Channel> {
+        let mut channels = vec![];
+
+        let topic = self.get_topic(topic_name);
+        match topic {
+            Some(t) => {
+                for (ch, __) in &t.chan_map {
+                    if let Some(chan) = self.channels.get(ch) {
+                        channels.push(chan);
+                    }
+                }
+
+                channels
+            },
+            None => channels
+        }
+    }
+
+    pub fn get_clients(&self, chan_name: &str) -> Vec<&Client> {
+        let mut clients = vec![];
+
+        let channel = self.channels.get(chan_name);
+        match channel {
+            Some(ch) => {
+                for (c_id, __) in &ch.clients {
+                    if let Some(client) = self.clients.get(c_id) {
+                        clients.push(client);
+                    }
+                }
+
+                clients
+            },
+            None => clients
+        }
+    }
+
     pub async fn topic_add_client(
         &mut self,
         c_id: ClientID,
@@ -135,7 +177,7 @@ impl MQ {
     }
 }
 
-pub async fn start_queue(mq: Arc<Mutex<MQ>>, tcp_addr: &str) -> Result<(), MQError> {
+pub async fn start_queue(mq: ArcMQ, tcp_addr: &str) -> Result<(), MQError> {
     println!("starting queue at: {}", tcp_addr);
     let listener = TcpListener::bind(tcp_addr).await?;
 
@@ -155,9 +197,9 @@ pub async fn start_queue(mq: Arc<Mutex<MQ>>, tcp_addr: &str) -> Result<(), MQErr
     }
 }
 
-async fn tcp_handler(stream: TcpStream, mq: Arc<Mutex<MQ>>) -> Result<(), MQError> {
+async fn tcp_handler(stream: TcpStream, mq: ArcMQ) -> Result<(), MQError> {
     let c_id = {
-        let mut q = mq.lock().await;
+        let mut q = mq.write().await;
         q.incr_client_id_seq()
     };
 
