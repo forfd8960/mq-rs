@@ -33,6 +33,8 @@ pub async fn consume(
     let sub_cmd = encode_sub(topic, channel); // e.g. SUB orders analysis\n
     writer.send(sub_cmd.freeze()).await?;
 
+    println!("subed to {}->{}", topic, channel);
+
     let (tx, rx) = mpsc::channel::<Message>(1000);
 
     tokio::spawn(async move {
@@ -62,17 +64,18 @@ async fn read_loop(
                 match decode_message(&data) {
                     Ok(msg) => {
                         println!(
-                            "MSG id={} ts={} attempts={} body_len={}",
+                            "MSG id={} ts={} attempts={} body={}",
                             msg.id,
                             msg.ts,
                             msg.attempts,
-                            msg.body.len()
+                            String::from_utf8_lossy(&msg.body)
                         );
                         let _ = tx.send(msg).await;
                     }
                     Err(_) => {
                         // If your data is not Message format, keep raw handling:
                         println!("MSG raw len={}", data.len());
+                        println!("MSG: {}", String::from_utf8_lossy(&data));
                     }
                 }
             }

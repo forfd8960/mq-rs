@@ -9,7 +9,7 @@ use std::{
 
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::{Mutex, RwLock, broadcast, mpsc},
+    sync::{broadcast, mpsc, Mutex, RwLock},
     time::sleep,
 };
 
@@ -122,10 +122,8 @@ impl MQ {
     pub async fn get_channels(&self, topic_name: &str) -> Vec<SlimChannel> {
         let topic = self.get_topic(topic_name);
         match topic {
-            Some(t) => {
-                t.list_chans().await
-            },
-            None => vec![]
+            Some(t) => t.list_chans().await,
+            None => vec![],
         }
     }
 
@@ -142,8 +140,8 @@ impl MQ {
                 }
 
                 clients
-            },
-            None => clients
+            }
+            None => clients,
         }
     }
 
@@ -152,19 +150,12 @@ impl MQ {
         c_id: ClientID,
         t: &str,
         chan: &str,
+        tx: mpsc::Sender<Message>,
     ) -> Result<(), MQError> {
         let topic = self.topic_map.get_mut(t);
         match topic {
-            Some(t) => t.add_client(c_id, chan).await,
+            Some(t) => t.add_client(c_id, chan, tx).await,
             None => return Err(MQError::TopicNotFound(t.to_string())),
-        }
-    }
-
-    pub fn add_client_to_chan(&mut self, chan_name: &str, c_id: ClientID) -> Result<(), MQError> {
-        let chan = self.channels.get_mut(chan_name);
-        match chan {
-            Some(ch) => ch.add_client(c_id),
-            None => Ok(()),
         }
     }
 }

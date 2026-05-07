@@ -1,13 +1,13 @@
 use std::{collections::HashMap, sync::Arc};
 
-use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock};
 
 use crate::{
     channel::{Channel, SlimChannel},
     client::ClientID,
     errors::MQError,
     message::Message,
-    mq::{ArcMQ, MQ},
+    mq::MQ,
 };
 
 pub type MsgSender = mpsc::Sender<Message>;
@@ -46,20 +46,24 @@ impl Topic {
         }
     }
 
-    pub async fn add_client(&mut self, c_id: ClientID, chan_name: &str) -> Result<(), MQError> {
+    pub async fn add_client(
+        &mut self,
+        c_id: ClientID,
+        chan_name: &str,
+        tx: mpsc::Sender<Message>,
+    ) -> Result<(), MQError> {
         let topic_name = self.name.clone();
-
         let mut chan_map = self.chan_map.write().await;
+
         let channel = chan_map.get_mut(chan_name);
         match channel {
             Some(chan) => {
-                chan.add_client(c_id);
+                let _ = chan.add_client(c_id, tx);
             }
             None => {
-                let rx = self.channel_msg_sender.subscribe();
-
+                let rx = self.sub_msg_chan();
                 let mut chan = Channel::new(chan_name, &topic_name, rx);
-                let _ = chan.add_client(c_id);
+                let _ = chan.add_client(c_id, tx);
                 chan_map.insert(chan_name.to_string(), chan);
             }
         }
@@ -79,7 +83,7 @@ impl Topic {
             slim_chans.push(SlimChannel {
                 name: chan.name.clone(),
                 topic: chan.topic.clone(),
-                clients: chan.clients.iter().map(|(c_id, _)|  *c_id).collect(),
+                clients: chan.clients.iter().map(|(c_id, _)| *c_id).collect(),
             });
         }
         slim_chans

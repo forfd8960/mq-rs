@@ -1,9 +1,6 @@
-use std::sync::Arc;
-
 use futures::SinkExt;
 use tokio::io::{AsyncWriteExt, WriteHalf};
 use tokio::net::TcpStream;
-use tokio::sync::Mutex;
 use tokio_util::codec::{FramedWrite, LengthDelimitedCodec};
 
 use crate::errors::MQError;
@@ -17,9 +14,7 @@ pub struct Producer<'a> {
 
 impl<'a> Producer<'a> {
     pub fn new(addr: &'a str) -> Self {
-        Self {
-            addr,
-        }
+        Self { addr }
     }
 
     pub async fn init_client(&mut self, stream: &mut TcpStream) -> Result<(), MQError> {

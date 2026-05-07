@@ -6,6 +6,7 @@ use tokio::sync::Mutex;
 use tokio_util::bytes::BytesMut;
 use tokio_util::codec::LengthDelimitedCodec;
 
+use crate::message::decode_message;
 use crate::{errors::MQError, mq::MQ};
 
 /*
@@ -129,6 +130,35 @@ pub fn build_r_w_codec() -> (LengthDelimitedCodec, LengthDelimitedCodec) {
         .new_codec();
 
     (length_decoder, length_encoder)
+}
+
+pub fn display_data(frame_type: FrameType, data: BytesMut) {
+    match frame_type {
+        FrameType::Message => {
+            // optional: decode into Message (depends on server message format)
+            match decode_message(&data) {
+                Ok(msg) => {
+                    println!(
+                        "MSG id={} ts={} attempts={} body_len={}",
+                        msg.id,
+                        msg.ts,
+                        msg.attempts,
+                        msg.body.len()
+                    );
+                }
+                Err(_) => {
+                    // If your data is not Message format, keep raw handling:
+                    println!("MSG raw len={}", data.len());
+                }
+            }
+        }
+        FrameType::Response => {
+            println!("OK: {}", String::from_utf8_lossy(&data));
+        }
+        FrameType::Error => {
+            eprintln!("server error: {}", String::from_utf8_lossy(&data))
+        }
+    }
 }
 
 #[cfg(test)]

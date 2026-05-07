@@ -1,12 +1,11 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt, WriteHalf},
-    net::{TcpStream, tcp::{self, OwnedWriteHalf}},
-    sync::{Mutex, RwLock, mpsc},
-    time,
+    net::TcpStream,
+    sync::{mpsc, RwLock},
 };
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 
@@ -21,6 +20,7 @@ use crate::{
 pub type ClientID = u64;
 const MAGIC: &'static str = "RQV0";
 
+#[derive(Debug)]
 pub enum EventResp {
     Err(MQError),
     Msg(Vec<u8>),
@@ -30,39 +30,21 @@ pub enum EventResp {
 pub struct Client {
     pub id: ClientID,
     pub mq: ArcMQ,
-    pub sub_chan: Arc<RwLock<Option<Channel>>>,
-    event_sender: mpsc::Sender<EventResp>,
-    event_receiver: Arc<RwLock<mpsc::Receiver<EventResp>>>,
+    pub topic: Option<String>,
 }
 
 impl Client {
     pub fn new(client_id: u64, mq: ArcMQ) -> Self {
-        let (tx, rx) = mpsc::channel::<EventResp>(1000);
-
         Self {
             id: client_id,
             mq,
-            sub_chan: Arc::new(RwLock::new(None)),
-            event_sender: tx,
-            event_receiver: Arc::new(RwLock::new(rx)),
+            topic: None,
         }
-    }
-
-    pub async fn sub_to_chan(&mut self, chan: Channel) {
-        let c_chan = self.sub_chan.read().await;
-        if c_chan.is_some() {
-            return;
-        }
-
-        let mut c_chan = self.sub_chan.write().await;
-        *c_chan = Some(chan)
     }
 
     pub async fn handle_conn(&mut self, tcp_stream: &mut TcpStream) -> Result<(), MQError> {
         let mut buf = vec![0u8; 4];
-        let n = {
-            tcp_stream.read(&mut buf).await?
-        };
+        let n = { tcp_stream.read(&mut buf).await? };
 
         if n == 0 {
             println!("client disconnected");
@@ -78,7 +60,6 @@ impl Client {
             return Ok(());
         }
 
-        self.message_pump().await;
         self.handle_stream(tcp_stream).await?;
 
         Ok(())
@@ -92,15 +73,15 @@ impl Client {
         let mut framed_read = FramedRead::new(read_half, decoder);
         let mut framed_write = FramedWrite::new(write_half, encoder);
 
-        let recv_clone = self.event_receiver.clone();
-        let mut event_recv = recv_clone.write().await;
+        let (msg_sender, mut msg_recv) = mpsc::channel::<EventResp>(1000);
 
         loop {
             tokio::select! {
-                    event = event_recv.recv() => {
+                    event = msg_recv.recv() => {
                         match event {
                             Some(ev) => {
-                                self.send(&mut framed_write, ev);
+                                println!("received event: {:?}", ev);
+                                self.send(&mut framed_write, ev).await;
                             }
                             None => {}
                         }
@@ -110,19 +91,22 @@ impl Client {
                     match frame_data {
                         Some(Ok(data)) => {
                         let event = decode_line_to_event(data)?;
-                        let resp = self.handle_event(event).await;
+                        println!("handling event: {:?}", event);
+
+                        let resp = self.handle_event(event, msg_sender.clone()).await;
                         match resp {
                             Ok(r) => {
-                                self.send(&mut framed_write, r);
+                                println!("send msg: {:?} to client", r);
+                                self.send(&mut framed_write, r).await;
                             }
                             Err(e) => {
-                                self.send(&mut framed_write, EventResp::Err(e));
+                                self.send(&mut framed_write, EventResp::Err(e)).await;
                             }
                         }
                     }
 
                     Some(Err(e)) => {
-                        self.send(&mut framed_write, EventResp::Err(MQError::IOError(e)));
+                        self.send(&mut framed_write, EventResp::Err(MQError::IOError(e))).await;
                     }
 
                     None => return Ok(()),
@@ -132,14 +116,18 @@ impl Client {
         }
     }
 
-    async fn handle_event(&mut self, ev: Event) -> Result<EventResp, MQError> {
+    async fn handle_event(
+        &mut self,
+        ev: Event,
+        msg_sender: mpsc::Sender<EventResp>,
+    ) -> Result<EventResp, MQError> {
         match ev {
             Event::PUB { topic, msg } => self.handle_pub(&topic, msg).await,
-            Event::SUB { topic, channel } => self.handle_sub(&topic, &channel).await,
+            Event::SUB { topic, channel } => self.handle_sub(&topic, &channel, msg_sender).await,
         }
     }
 
-    fn send(
+    async fn send(
         &self,
         writer: &mut FramedWrite<WriteHalf<&mut TcpStream>, LengthDelimitedCodec>,
         event_resp: EventResp,
@@ -147,8 +135,12 @@ impl Client {
         match event_resp {
             EventResp::Err(e) => {
                 send_framed_response(writer, FrameType::Error, e.to_string().as_bytes().to_vec())
+                    .await
             }
-            EventResp::Msg(msg) => send_framed_response(writer, FrameType::Message, msg),
+            EventResp::Msg(msg) => {
+                println!("send msg: {:?} to writer", msg);
+                send_framed_response(writer, FrameType::Message, msg).await;
+            }
         }
     }
 
@@ -156,13 +148,20 @@ impl Client {
         &mut self,
         topic_name: &str,
         channel_name: &str,
+        msg_sender: mpsc::Sender<EventResp>,
     ) -> Result<EventResp, MQError> {
         println!("handle sub: {}->{}", topic_name, channel_name);
 
+        let (tx, _) = mpsc::channel::<Message>(1000);
+
         let mut mq = self.mq.write().await;
         let _ = mq
-            .sub_channel(self.id, topic_name, channel_name)
+            .sub_channel(self.id, topic_name, channel_name, tx)
             .await?;
+        drop(mq);
+
+        self.topic = Some(topic_name.to_string());
+        self.message_pump1(msg_sender).await;
 
         println!("add client: {} to {}", self.id, topic_name);
         Ok(EventResp::Msg(b"OK".to_vec()))
@@ -172,60 +171,57 @@ impl Client {
         // 1. find the topic
         // 2. send the message to the topic message chan
 
-        println!("handle pub: {}->{}", topic, String::from_utf8_lossy(&msg));
+        println!(
+            "handle pub, topic: {}, message: {}",
+            topic,
+            String::from_utf8_lossy(&msg)
+        );
 
         let mq = self.mq.read().await;
         match mq.get_topic(topic) {
             Some(t) => {
+                println!("put message: {:?} to topic msg channel", msg);
                 t.put_message(Message::new(msg));
-                Ok(EventResp::Msg(b"OK".to_vec()))
+                Ok(EventResp::Msg(encode_msg(Message::new(b"OK".to_vec()))))
             }
             None => return Err(MQError::TopicNotFound("topic: {} not found".to_string())),
         }
     }
 
-    async fn message_pump(&self) {
-        let chan_clone = self.sub_chan.clone();
-        let ev_sender = self.event_sender.clone();
+    async fn message_pump1(&self, tx: mpsc::Sender<EventResp>) {
+        let topic_name = match self.topic.clone() {
+            Some(topic) => topic,
+            None => return,
+        };
+
+        let mq = self.mq.clone();
+
+        let mut topic_recv = {
+            let mq = mq.read().await;
+            match mq.get_topic(&topic_name) {
+                Some(topic) => topic.sub_msg_chan(),
+                None => return,
+            }
+        };
 
         tokio::spawn(async move {
-            let mut tick = time::interval(Duration::from_millis(2000));
-            tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
-
             loop {
-                tick.tick().await; // waits for next 1s tick
-                println!("message pump after 2s");
-
-                let mut sub_chan = chan_clone.write().await;
-                if sub_chan.is_none() {
-                    continue;
-                }
-
-                let chan = sub_chan.as_mut();
-                match chan {
-                    Some(ch) => {
-                        tokio::select! {
-                            chan_msg_res = ch.memory_msg_chan.recv() => {
-                                match chan_msg_res {
-                                    Ok(chan_msg) => {
-                                        println!("received msg: {:?}", chan_msg);
-                                        let _ = ev_sender.send(EventResp::Msg(encode_msg(chan_msg))).await;
-                                    },
-                                    Err(e) => {
-                                        eprintln!("recv failed: {}", e);
-                                    }
-                                }
-                            }
-                        }
+                match topic_recv.recv().await {
+                    Ok(chan_msg) => {
+                        println!("received msg: {:?}", chan_msg);
+                        let _ = tx.send(EventResp::Msg(encode_msg(chan_msg))).await;
                     }
-                    None => {}
+                    Err(e) => {
+                        eprintln!("recv failed: {}", e);
+                        break;
+                    }
                 }
             }
         });
     }
 }
 
-pub fn send_framed_response(
+pub async fn send_framed_response(
     writer: &mut FramedWrite<WriteHalf<&mut TcpStream>, LengthDelimitedCodec>,
     frame_type: FrameType,
     data: Vec<u8>,
@@ -235,8 +231,8 @@ pub fn send_framed_response(
     buf.extend_from_slice(f_t.to_be_bytes().as_ref());
     buf.extend_from_slice(&data);
 
-    let _ = writer.send(Bytes::from(buf));
-    let _ = writer.flush();
+    let _ = writer.send(Bytes::from(buf)).await;
+    let _ = writer.flush().await;
 }
 
 fn encode_error(err: MQError) -> Vec<u8> {
