@@ -50,12 +50,10 @@ impl Options {
 
 #[derive(Debug)]
 pub struct MQ {
-    // clientIDSequence int64
     pub client_id_seq: u64,
     pub opts: Options,
     pub topic_map: HashMap<String, Topic>,
     pub clients: HashMap<ClientID, Client>,
-    pub channels: HashMap<String, Channel>,
 }
 
 impl MQ {
@@ -66,7 +64,6 @@ impl MQ {
             opts,
             topic_map: HashMap::new(),
             clients: HashMap::new(),
-            channels: HashMap::new(),
         })
     }
 
@@ -96,23 +93,12 @@ impl MQ {
         Ok(())
     }
 
-    pub fn create_client(&mut self, c_id: ClientID, client: Client) -> Result<(), MQError> {
+    pub fn create_client(&mut self, c_id: ClientID, client: Client) {
         if let Some(_) = self.clients.get(&c_id) {
-            return Ok(());
+            return;
         }
 
         self.clients.insert(c_id, client);
-        Ok(())
-    }
-
-    pub fn create_channel(&mut self, chan: Channel) -> Result<(), MQError> {
-        let name = chan.name.clone();
-        if let Some(_) = self.channels.get(&name) {
-            return Ok(());
-        }
-
-        self.channels.insert(name, chan);
-        Ok(())
     }
 
     pub fn get_client(&self, c_id: ClientID) -> Option<&Client> {
@@ -127,22 +113,16 @@ impl MQ {
         }
     }
 
-    pub fn get_clients(&self, chan_name: &str) -> Vec<&Client> {
+    pub fn get_clients(&self, chan: &SlimChannel) -> Vec<&Client> {
         let mut clients = vec![];
 
-        let channel = self.channels.get(chan_name);
-        match channel {
-            Some(ch) => {
-                for (c_id, __) in &ch.clients {
-                    if let Some(client) = self.clients.get(c_id) {
-                        clients.push(client);
-                    }
-                }
-
-                clients
+        for c_id in &chan.clients {
+            if let Some(client) = self.clients.get(c_id) {
+                clients.push(client);
             }
-            None => clients,
         }
+
+        clients
     }
 
     pub async fn sub_channel(
@@ -181,11 +161,18 @@ pub async fn start_queue(mq: ArcMQ, tcp_addr: &str) -> Result<(), MQError> {
 }
 
 async fn tcp_handler(stream: &mut TcpStream, mq: ArcMQ) -> Result<(), MQError> {
+    let mq_clone = mq.clone();
+
     let c_id = {
         let mut q = mq.write().await;
         q.incr_client_id_seq()
     };
 
     let mut client = Client::new(c_id, mq);
+    {
+        let mut mq = mq_clone.write().await;
+        mq.create_client(c_id, client.clone());
+    }
+
     client.handle_conn(stream).await
 }

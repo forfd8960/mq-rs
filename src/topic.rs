@@ -7,7 +7,6 @@ use crate::{
     client::ClientID,
     errors::MQError,
     message::Message,
-    mq::MQ,
 };
 
 pub type MsgSender = mpsc::Sender<Message>;
@@ -87,6 +86,18 @@ impl Topic {
             });
         }
         slim_chans
+    }
+
+    pub async fn get_chan(&mut self, chan_name: &str) -> Option<SlimChannel> {
+        let chan_map = self.chan_map.read().await;
+        match chan_map.get(chan_name) {
+            Some(chan) => Some(SlimChannel {
+                name: chan.name.clone(),
+                topic: chan.topic.clone(),
+                clients: chan.clients.iter().map(|(c_id, _)| *c_id).collect(),
+            }),
+            None => None,
+        }
     }
 
     pub async fn add_chan(&mut self, chan_name: &str, chan: Channel) {

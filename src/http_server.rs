@@ -150,11 +150,11 @@ async fn get_mq_topic(mq: Arc<RwLock<MQ>>, topic_name: &str) -> Option<Topic> {
 
     match mq.get_topic(&topic_name) {
         Some(t) => {
-            let chans = mq.get_channels(&topic_name).await;
+            let chans = t.list_chans().await;
             let mut simple_chans = HashMap::new();
 
             for ch in chans {
-                let clients = mq.get_clients(&ch.name);
+                let clients = mq.get_clients(&ch);
                 let mut client_hash = HashMap::new();
                 for cli in clients {
                     client_hash.insert(cli.id, Client { id: cli.id });

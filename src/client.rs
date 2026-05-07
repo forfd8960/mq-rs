@@ -26,11 +26,12 @@ pub enum EventResp {
     Msg(Vec<u8>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Client {
     pub id: ClientID,
     pub mq: ArcMQ,
     pub topic: Option<String>,
+    pub chan: Option<String>,
 }
 
 impl Client {
@@ -39,6 +40,7 @@ impl Client {
             id: client_id,
             mq,
             topic: None,
+            chan: None,
         }
     }
 
@@ -61,7 +63,6 @@ impl Client {
         }
 
         self.handle_stream(tcp_stream).await?;
-
         Ok(())
     }
 
@@ -91,12 +92,9 @@ impl Client {
                     match frame_data {
                         Some(Ok(data)) => {
                         let event = decode_line_to_event(data)?;
-                        println!("handling event: {:?}", event);
-
                         let resp = self.handle_event(event, msg_sender.clone()).await;
                         match resp {
                             Ok(r) => {
-                                println!("send msg: {:?} to client", r);
                                 self.send(&mut framed_write, r).await;
                             }
                             Err(e) => {
@@ -138,7 +136,6 @@ impl Client {
                     .await
             }
             EventResp::Msg(msg) => {
-                println!("send msg: {:?} to writer", msg);
                 send_framed_response(writer, FrameType::Message, msg).await;
             }
         }
@@ -161,6 +158,7 @@ impl Client {
         drop(mq);
 
         self.topic = Some(topic_name.to_string());
+        self.chan = Some(channel_name.to_string());
         self.message_pump1(msg_sender).await;
 
         println!("add client: {} to {}", self.id, topic_name);
