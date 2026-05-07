@@ -1,5 +1,5 @@
 use futures::{SinkExt, StreamExt};
-use tokio::io::{self, AsyncWriteExt, ReadHalf, WriteHalf};
+use tokio::io::{self, AsyncWriteExt, ReadHalf};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};

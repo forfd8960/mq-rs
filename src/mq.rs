@@ -9,16 +9,15 @@ use std::{
 
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::{broadcast, mpsc, Mutex, RwLock},
-    time::sleep,
+    sync::{mpsc, RwLock},
 };
 
 use crate::{
-    channel::{Channel, SlimChannel},
-    client::{self, Client, ClientID},
+    channel::SlimChannel,
+    client::{Client, ClientID},
     errors::MQError,
     message::Message,
-    topic::{self, Topic},
+    topic::Topic,
 };
 
 pub type ArcMQ = Arc<RwLock<MQ>>;

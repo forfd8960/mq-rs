@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::{
-    client::{Client, ClientID},
+    client::ClientID,
     errors::MQError,
     message::Message,
 };

@@ -1,13 +1,10 @@
-use std::sync::Arc;
 
 use bytes::Buf;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
 use tokio_util::bytes::BytesMut;
 use tokio_util::codec::LengthDelimitedCodec;
 
 use crate::message::decode_message;
-use crate::{errors::MQError, mq::MQ};
+use crate::errors::MQError;
 
 /*
 const (
@@ -109,7 +106,7 @@ pub fn decode_line_to_event(payload: BytesMut) -> Result<Event, MQError> {
 
 fn bytes_to_string(bs: &[u8]) -> Result<String, MQError> {
     String::from_utf8(bs.to_vec())
-        .map_err(|e| MQError::BadEventPayload("not valid topic name".to_string()))
+        .map_err(|_e| MQError::BadEventPayload("not valid topic name".to_string()))
 }
 
 pub fn build_r_w_codec() -> (LengthDelimitedCodec, LengthDelimitedCodec) {

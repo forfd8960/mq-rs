@@ -1,6 +1,5 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use bytes::BytesMut;
 use uuid::Uuid;
 
 use crate::errors::MQError;

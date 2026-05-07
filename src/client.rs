@@ -1,16 +1,13 @@
-use std::sync::Arc;
-
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt, WriteHalf},
     net::TcpStream,
-    sync::{mpsc, RwLock},
+    sync::mpsc,
 };
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 
 use crate::{
-    channel::Channel,
     errors::MQError,
     message::{encode_msg, Message},
     mq::ArcMQ,
@@ -91,23 +88,23 @@ impl Client {
                     frame_data = framed_read.next() => {
                     match frame_data {
                         Some(Ok(data)) => {
-                        let event = decode_line_to_event(data)?;
-                        let resp = self.handle_event(event, msg_sender.clone()).await;
-                        match resp {
-                            Ok(r) => {
-                                self.send(&mut framed_write, r).await;
-                            }
-                            Err(e) => {
-                                self.send(&mut framed_write, EventResp::Err(e)).await;
-                            }
+                                let event = decode_line_to_event(data)?;
+                                let resp = self.handle_event(event, msg_sender.clone()).await;
+                                match resp {
+                                    Ok(r) => {
+                                        self.send(&mut framed_write, r).await;
+                                    }
+                                    Err(e) => {
+                                        self.send(&mut framed_write, EventResp::Err(e)).await;
+                                    }
+                                }
                         }
-                    }
 
-                    Some(Err(e)) => {
-                        self.send(&mut framed_write, EventResp::Err(MQError::IOError(e))).await;
-                    }
+                        Some(Err(e)) => {
+                            self.send(&mut framed_write, EventResp::Err(MQError::IOError(e))).await;
+                        }
 
-                    None => return Ok(()),
+                        None => return Ok(()),
                     }
                 }
             }
