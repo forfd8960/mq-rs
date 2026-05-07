@@ -1,15 +1,20 @@
 use std::{collections::HashMap, sync::Arc};
 
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 
-use crate::{channel::Channel, client::ClientID, errors::MQError, message::Message, mq::{ArcMQ, MQ}};
+use crate::{
+    channel::{Channel, SlimChannel},
+    client::ClientID,
+    errors::MQError,
+    message::Message,
+    mq::{ArcMQ, MQ},
+};
 
 pub type MsgSender = mpsc::Sender<Message>;
 
 #[derive(Debug)]
 pub struct Topic {
     pub name: String,
-    pub mq: ArcMQ,
     pub msg_count: u64,
     pub msg_size: u64,
 
@@ -23,51 +28,69 @@ pub struct Topic {
 
     // and then broadcast the message to all channels
     pub channel_msg_sender: broadcast::Sender<Message>,
-    pub chan_map: HashMap<String, ()>,
+    pub chan_map: Arc<RwLock<HashMap<String, Channel>>>,
 }
 
 impl Topic {
-    pub fn new(name: &str, mq: ArcMQ, msg_cap: usize) -> Self {
+    pub fn new(name: &str, msg_cap: usize) -> Self {
         let (msg_chan_sender, msg_chan_recv) = mpsc::channel::<Message>(msg_cap);
         let (chan_msg_chan_sender, _) = broadcast::channel::<Message>(msg_cap);
         Self {
             name: name.to_string(),
-            mq,
             msg_count: 0,
             msg_size: 0,
             memory_msg_chan_sender: msg_chan_sender,
             memory_msg_chan_recv: msg_chan_recv,
             channel_msg_sender: chan_msg_chan_sender,
-            chan_map: HashMap::new(),
+            chan_map: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    pub async fn add_client(&mut self, c_id: ClientID, channel: &str) -> Result<(), MQError> {
+    pub async fn add_client(&mut self, c_id: ClientID, chan_name: &str) -> Result<(), MQError> {
         let topic_name = self.name.clone();
 
-        let chan = self.chan_map.get(channel);
-        match chan {
-            Some(_) => {
-                let mut mq = self.mq.write().await;
-                let _ = mq.add_client_to_chan(channel, c_id);
+        let mut chan_map = self.chan_map.write().await;
+        let channel = chan_map.get_mut(chan_name);
+        match channel {
+            Some(chan) => {
+                chan.add_client(c_id);
             }
             None => {
-                let mq_c = self.mq.clone();
                 let rx = self.channel_msg_sender.subscribe();
 
-                let mut chan = Channel::new(channel, &topic_name, mq_c, rx);
+                let mut chan = Channel::new(chan_name, &topic_name, rx);
                 let _ = chan.add_client(c_id);
-
-                let mut mq = self.mq.write().await;
-                let _ = mq.create_channel(chan);
-                self.chan_map.insert(channel.to_string(), ());
+                chan_map.insert(chan_name.to_string(), chan);
             }
         }
 
         Ok(())
     }
 
+    pub fn sub_msg_chan(&self) -> broadcast::Receiver<Message> {
+        self.channel_msg_sender.subscribe()
+    }
+
+    pub async fn list_chans(&self) -> Vec<SlimChannel> {
+        let mut slim_chans = vec![];
+
+        let chan_map = self.chan_map.read().await;
+        for (_, chan) in chan_map.iter() {
+            slim_chans.push(SlimChannel {
+                name: chan.name.clone(),
+                topic: chan.topic.clone(),
+                clients: chan.clients.iter().map(|(c_id, _)|  *c_id).collect(),
+            });
+        }
+        slim_chans
+    }
+
+    pub async fn add_chan(&mut self, chan_name: &str, chan: Channel) {
+        let mut chan_map = self.chan_map.write().await;
+        chan_map.insert(chan_name.to_string(), chan);
+    }
+
     pub fn put_message(&self, msg: Message) {
-        self.channel_msg_sender.send(msg);
+        let _ = self.channel_msg_sender.send(msg);
     }
 }

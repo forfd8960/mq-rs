@@ -14,7 +14,7 @@ use tokio::{
 };
 
 use crate::{
-    channel::Channel,
+    channel::{Channel, SlimChannel},
     client::{self, Client, ClientID},
     errors::MQError,
     message::Message,
@@ -119,21 +119,13 @@ impl MQ {
         self.clients.get(&c_id)
     }
 
-    pub fn get_channels(&self, topic_name: &str) -> Vec<&Channel> {
-        let mut channels = vec![];
-
+    pub async fn get_channels(&self, topic_name: &str) -> Vec<SlimChannel> {
         let topic = self.get_topic(topic_name);
         match topic {
             Some(t) => {
-                for (ch, __) in &t.chan_map {
-                    if let Some(chan) = self.channels.get(ch) {
-                        channels.push(chan);
-                    }
-                }
-
-                channels
+                t.list_chans().await
             },
-            None => channels
+            None => vec![]
         }
     }
 
@@ -155,7 +147,7 @@ impl MQ {
         }
     }
 
-    pub async fn topic_add_client(
+    pub async fn sub_channel(
         &mut self,
         c_id: ClientID,
         t: &str,
@@ -184,25 +176,25 @@ pub async fn start_queue(mq: ArcMQ, tcp_addr: &str) -> Result<(), MQError> {
     println!("queue initilized, waiting connection");
     loop {
         // accept a new connection
-        let (stream, addr) = listener.accept().await?;
+        let (mut stream, addr) = listener.accept().await?;
         println!("accepted connection from {}", addr);
 
         let mq_clone = mq.clone();
         // spawn a task to handle this client loop
         tokio::spawn(async move {
-            if let Err(e) = tcp_handler(stream, mq_clone).await {
+            if let Err(e) = tcp_handler(&mut stream, mq_clone).await {
                 eprintln!("client {} error: {}", addr, e);
             }
         });
     }
 }
 
-async fn tcp_handler(stream: TcpStream, mq: ArcMQ) -> Result<(), MQError> {
+async fn tcp_handler(stream: &mut TcpStream, mq: ArcMQ) -> Result<(), MQError> {
     let c_id = {
         let mut q = mq.write().await;
         q.incr_client_id_seq()
     };
 
-    let mut client = Client::new(c_id, stream, mq);
-    client.handle_conn().await
+    let mut client = Client::new(c_id, mq);
+    client.handle_conn(stream).await
 }

@@ -3,9 +3,9 @@ use std::{sync::Arc, time::Duration};
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{tcp::OwnedWriteHalf, TcpStream},
-    sync::{mpsc, Mutex, RwLock},
+    io::{self, AsyncReadExt, AsyncWriteExt, WriteHalf},
+    net::{TcpStream, tcp::{self, OwnedWriteHalf}},
+    sync::{Mutex, RwLock, mpsc},
     time,
 };
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
@@ -29,7 +29,6 @@ pub enum EventResp {
 #[derive(Debug)]
 pub struct Client {
     pub id: ClientID,
-    pub stream: Arc<Mutex<TcpStream>>,
     pub mq: ArcMQ,
     pub sub_chan: Arc<RwLock<Option<Channel>>>,
     event_sender: mpsc::Sender<EventResp>,
@@ -37,12 +36,11 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new(client_id: u64, tcp_stream: TcpStream, mq: ArcMQ) -> Self {
+    pub fn new(client_id: u64, mq: ArcMQ) -> Self {
         let (tx, rx) = mpsc::channel::<EventResp>(1000);
 
         Self {
             id: client_id,
-            stream: Arc::new(Mutex::new(tcp_stream)),
             mq,
             sub_chan: Arc::new(RwLock::new(None)),
             event_sender: tx,
@@ -60,11 +58,10 @@ impl Client {
         *c_chan = Some(chan)
     }
 
-    pub async fn handle_conn(&mut self) -> Result<(), MQError> {
+    pub async fn handle_conn(&mut self, tcp_stream: &mut TcpStream) -> Result<(), MQError> {
         let mut buf = vec![0u8; 4];
         let n = {
-            let mut stream = self.stream.lock().await;
-            stream.read(&mut buf).await?
+            tcp_stream.read(&mut buf).await?
         };
 
         if n == 0 {
@@ -74,8 +71,7 @@ impl Client {
 
         if buf != MAGIC.as_bytes() {
             {
-                let mut stream = self.stream.lock().await;
-                stream
+                tcp_stream
                     .write(encode_error(MQError::BadProtocol).as_ref())
                     .await?;
             }
@@ -83,22 +79,18 @@ impl Client {
         }
 
         self.message_pump().await;
-        self.handle_stream().await?;
+        self.handle_stream(tcp_stream).await?;
 
         Ok(())
     }
 
-    async fn handle_stream(&mut self) -> Result<(), MQError> {
-        let stream = Arc::try_unwrap(self.stream.clone())
-            .map_err(|_| MQError::Custom("Failed to unwrap Arc".to_string()))?
-            .into_inner();
+    async fn handle_stream(&mut self, tcp_stream: &mut TcpStream) -> Result<(), MQError> {
+        let (read_half, write_half) = io::split(tcp_stream);
 
-        let (read_half, write_half) = stream.into_split();
         let (decoder, encoder) = build_r_w_codec();
 
         let mut framed_read = FramedRead::new(read_half, decoder);
-        let mut framed_write: FramedWrite<OwnedWriteHalf, LengthDelimitedCodec> =
-            FramedWrite::new(write_half, encoder);
+        let mut framed_write = FramedWrite::new(write_half, encoder);
 
         let recv_clone = self.event_receiver.clone();
         let mut event_recv = recv_clone.write().await;
@@ -149,7 +141,7 @@ impl Client {
 
     fn send(
         &self,
-        writer: &mut FramedWrite<OwnedWriteHalf, LengthDelimitedCodec>,
+        writer: &mut FramedWrite<WriteHalf<&mut TcpStream>, LengthDelimitedCodec>,
         event_resp: EventResp,
     ) {
         match event_resp {
@@ -165,22 +157,28 @@ impl Client {
         topic_name: &str,
         channel_name: &str,
     ) -> Result<EventResp, MQError> {
+        println!("handle sub: {}->{}", topic_name, channel_name);
+
         let mut mq = self.mq.write().await;
         let _ = mq
-            .topic_add_client(self.id, topic_name, channel_name)
+            .sub_channel(self.id, topic_name, channel_name)
             .await?;
-        Ok(EventResp::Msg(vec![]))
+
+        println!("add client: {} to {}", self.id, topic_name);
+        Ok(EventResp::Msg(b"OK".to_vec()))
     }
 
     async fn handle_pub(&mut self, topic: &str, msg: Vec<u8>) -> Result<EventResp, MQError> {
         // 1. find the topic
         // 2. send the message to the topic message chan
 
+        println!("handle pub: {}->{}", topic, String::from_utf8_lossy(&msg));
+
         let mq = self.mq.read().await;
         match mq.get_topic(topic) {
             Some(t) => {
                 t.put_message(Message::new(msg));
-                Ok(EventResp::Msg(vec![]))
+                Ok(EventResp::Msg(b"OK".to_vec()))
             }
             None => return Err(MQError::TopicNotFound("topic: {} not found".to_string())),
         }
@@ -191,11 +189,13 @@ impl Client {
         let ev_sender = self.event_sender.clone();
 
         tokio::spawn(async move {
-            let mut tick = time::interval(Duration::from_millis(500));
+            let mut tick = time::interval(Duration::from_millis(2000));
             tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
 
             loop {
                 tick.tick().await; // waits for next 1s tick
+                println!("message pump after 2s");
+
                 let mut sub_chan = chan_clone.write().await;
                 if sub_chan.is_none() {
                     continue;
@@ -226,7 +226,7 @@ impl Client {
 }
 
 pub fn send_framed_response(
-    writer: &mut FramedWrite<OwnedWriteHalf, LengthDelimitedCodec>,
+    writer: &mut FramedWrite<WriteHalf<&mut TcpStream>, LengthDelimitedCodec>,
     frame_type: FrameType,
     data: Vec<u8>,
 ) {

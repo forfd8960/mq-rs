@@ -13,19 +13,16 @@ const MAGIC: &[u8; 4] = b"RQV0";
 
 pub struct Producer<'a> {
     pub addr: &'a str,
-    pub stream: Arc<Mutex<TcpStream>>,
 }
 
 impl<'a> Producer<'a> {
-    pub fn new(addr: &'a str, stream: TcpStream) -> Self {
+    pub fn new(addr: &'a str) -> Self {
         Self {
             addr,
-            stream: Arc::new(Mutex::new(stream)),
         }
     }
 
-    pub async fn init_client(&mut self) -> Result<(), MQError> {
-        let mut stream = self.stream.lock().await;
+    pub async fn init_client(&mut self, stream: &mut TcpStream) -> Result<(), MQError> {
         stream.write_all(MAGIC).await?;
         stream.flush().await?;
         Ok(())
@@ -37,7 +34,7 @@ impl<'a> Producer<'a> {
         topic: &str,
         msg: Vec<u8>,
     ) -> Result<(), MQError> {
-        let pub_cmd = encode_pub(topic, &msg); // e.g. SUB orders analysis\n
+        let pub_cmd = encode_pub(topic, &msg);
         writer.send(pub_cmd.freeze()).await?;
         Ok(())
     }

@@ -85,10 +85,9 @@ async fn create_topic(
             .into_response();
     }
 
-    let mq_clone = mq.clone();
     let mut mq = mq.write().await;
+    let t = QueueTopic::new(topic_name, 1000);
 
-    let t = QueueTopic::new(topic_name, mq_clone, 1000);
     match mq.create_topic(t) {
         Ok(_) => {
             return (StatusCode::CREATED, Json(Topic::new(&topic_name))).into_response();
@@ -151,7 +150,7 @@ async fn get_mq_topic(mq: Arc<RwLock<MQ>>, topic_name: &str) -> Option<Topic> {
 
     match mq.get_topic(&topic_name) {
         Some(t) => {
-            let chans = mq.get_channels(&topic_name);
+            let chans = mq.get_channels(&topic_name).await;
             let mut simple_chans = HashMap::new();
 
             for ch in chans {

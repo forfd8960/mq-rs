@@ -21,7 +21,7 @@ pub async fn consume(
     stream.flush().await?;
 
     // 2) split stream into read/write halves
-    let (read_half, write_half): (ReadHalf<TcpStream>, WriteHalf<TcpStream>) = io::split(stream);
+    let (read_half, write_half) = io::split(stream);
 
     // 3) setup length-delimited decoder/encoder
     let (read_codec, write_codec) = build_r_w_codec();
