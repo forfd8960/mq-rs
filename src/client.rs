@@ -146,12 +146,8 @@ impl Client {
     ) -> Result<EventResp, MQError> {
         println!("handle sub: {}->{}", topic_name, channel_name);
 
-        let (tx, _) = mpsc::channel::<Message>(1000);
-
         let mut mq = self.mq.write().await;
-        let _ = mq
-            .sub_channel(self.id, topic_name, channel_name, tx)
-            .await?;
+        let _ = mq.sub_channel(self.id, topic_name, channel_name).await?;
         drop(mq);
 
         self.topic = Some(topic_name.to_string());
@@ -189,19 +185,30 @@ impl Client {
             None => return,
         };
 
-        let mq = self.mq.clone();
-
-        let mut topic_recv = {
-            let mq = mq.read().await;
-            match mq.get_topic(&topic_name) {
-                Some(topic) => topic.sub_msg_chan(),
-                None => return,
-            }
+        let channel = match self.chan.clone() {
+            Some(chan) => chan,
+            None => return,
         };
+
+        let mq_clone = self.mq.clone();
+        let mq_read = mq_clone.read().await;
+        let channel_receiver = match mq_read.get_topic(&topic_name) {
+            Some(topic) => topic.get_channel_receiver(&channel),
+            None => return,
+        };
+
+        let chan_receiver = channel_receiver.await;
+        drop(mq_read);
+
+        if chan_receiver.is_none() {
+            return;
+        }
+
+        let mut channel_msg_receiver = chan_receiver.unwrap();
 
         tokio::spawn(async move {
             loop {
-                match topic_recv.recv().await {
+                match channel_msg_receiver.recv().await {
                     Ok(chan_msg) => {
                         println!("received msg: {:?}", chan_msg);
                         let _ = tx.send(EventResp::Msg(encode_msg(chan_msg))).await;

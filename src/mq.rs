@@ -129,11 +129,10 @@ impl MQ {
         c_id: ClientID,
         t: &str,
         chan: &str,
-        tx: mpsc::Sender<Message>,
     ) -> Result<(), MQError> {
         let topic = self.topic_map.get_mut(t);
         match topic {
-            Some(t) => t.add_client(c_id, chan, tx).await,
+            Some(t) => t.add_client(c_id, chan).await,
             None => return Err(MQError::TopicNotFound(t.to_string())),
         }
     }

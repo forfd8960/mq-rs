@@ -86,7 +86,7 @@ async fn create_topic(
     }
 
     let mut mq = mq.write().await;
-    let t = QueueTopic::new(topic_name, 1000);
+    let t = QueueTopic::new(topic_name, 1000).await;
 
     match mq.create_topic(t) {
         Ok(_) => {

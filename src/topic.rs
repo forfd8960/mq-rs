@@ -27,42 +27,41 @@ pub struct Topic {
 
     // and then broadcast the message to all channels
     pub channel_msg_sender: broadcast::Sender<Message>,
+    pub channel_msg_receiver: broadcast::Receiver<Message>,
     pub chan_map: Arc<RwLock<HashMap<String, Channel>>>,
 }
 
 impl Topic {
-    pub fn new(name: &str, msg_cap: usize) -> Self {
+    pub async fn new(name: &str, msg_cap: usize) -> Self {
         let (msg_chan_sender, msg_chan_recv) = mpsc::channel::<Message>(msg_cap);
-        let (chan_msg_chan_sender, _) = broadcast::channel::<Message>(msg_cap);
-        Self {
+        let (chan_msg_sender, chan_msg_receiver) = broadcast::channel::<Message>(msg_cap);
+        let topic = Topic {
             name: name.to_string(),
             msg_count: 0,
             msg_size: 0,
             memory_msg_chan_sender: msg_chan_sender,
             memory_msg_chan_recv: msg_chan_recv,
-            channel_msg_sender: chan_msg_chan_sender,
+            channel_msg_sender: chan_msg_sender,
+            channel_msg_receiver: chan_msg_receiver,
             chan_map: Arc::new(RwLock::new(HashMap::new())),
-        }
+        };
+
+        topic.message_pump().await;
+        topic
     }
 
-    pub async fn add_client(
-        &mut self,
-        c_id: ClientID,
-        chan_name: &str,
-        tx: mpsc::Sender<Message>,
-    ) -> Result<(), MQError> {
+    pub async fn add_client(&mut self, c_id: ClientID, chan_name: &str) -> Result<(), MQError> {
         let topic_name = self.name.clone();
         let mut chan_map = self.chan_map.write().await;
 
         let channel = chan_map.get_mut(chan_name);
         match channel {
             Some(chan) => {
-                let _ = chan.add_client(c_id, tx);
+                let _ = chan.add_client(c_id);
             }
             None => {
-                let rx = self.sub_msg_chan();
-                let mut chan = Channel::new(chan_name, &topic_name, rx);
-                let _ = chan.add_client(c_id, tx);
+                let mut chan = Channel::new(chan_name, &topic_name);
+                let _ = chan.add_client(c_id);
                 chan_map.insert(chan_name.to_string(), chan);
             }
         }
@@ -72,6 +71,17 @@ impl Topic {
 
     pub fn sub_msg_chan(&self) -> broadcast::Receiver<Message> {
         self.channel_msg_sender.subscribe()
+    }
+
+    pub async fn get_channel_receiver(
+        &self,
+        channel: &str,
+    ) -> Option<broadcast::Receiver<Message>> {
+        let chan_map = self.chan_map.read().await;
+        match chan_map.get(channel) {
+            Some(chan) => Some(chan.sub_channel()),
+            None => None,
+        }
     }
 
     pub async fn list_chans(&self) -> Vec<SlimChannel> {
@@ -107,5 +117,20 @@ impl Topic {
 
     pub fn put_message(&self, msg: Message) {
         let _ = self.channel_msg_sender.send(msg);
+    }
+
+    pub async fn message_pump(&self) {
+        let chan_map = self.chan_map.clone();
+        let mut chan_msg_receiver = self.channel_msg_sender.subscribe();
+
+        tokio::spawn(async move {
+            let chans = chan_map.clone();
+            while let Ok(msg) = chan_msg_receiver.recv().await {
+                // fanout to channels
+                for (_, chan) in chans.read().await.iter() {
+                    chan.send_msg(msg.clone());
+                }
+            }
+        });
     }
 }
