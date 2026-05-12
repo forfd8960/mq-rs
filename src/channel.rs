@@ -1,6 +1,10 @@
-use std::collections::{BinaryHeap, HashMap};
+use std::{
+    collections::{BinaryHeap, HashMap},
+    ops::Add,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, RwLock};
 
 use crate::{client::ClientID, errors::MQError, message::Message};
 
@@ -11,6 +15,21 @@ pub struct SlimChannel {
     pub clients: Vec<ClientID>,
 }
 
+#[derive(Debug)]
+pub struct InFlightMessages {
+    pub in_flight_queue: BinaryHeap<Message>,
+    pub in_flight_messages: HashMap<String, Message>,
+}
+
+impl InFlightMessages {
+    pub fn new() -> Self {
+        Self {
+            in_flight_queue: BinaryHeap::new(),
+            in_flight_messages: HashMap::new(),
+        }
+    }
+}
+
 // channel is the intermedia layer which hold the clients and messages
 #[derive(Debug)]
 pub struct Channel {
@@ -19,8 +38,7 @@ pub struct Channel {
     // topic broadcasr message to channels
     pub memory_msg_chan: broadcast::Sender<Message>,
     pub clients: HashMap<ClientID, ()>,
-    pub in_flight_queue: BinaryHeap<Message>,
-    pub in_flight_messages: HashMap<String, Message>,
+    pub in_flight_messages: RwLock<InFlightMessages>,
 }
 
 impl Channel {
@@ -31,8 +49,7 @@ impl Channel {
             topic: topic.to_string(),
             memory_msg_chan: tx,
             clients: HashMap::new(),
-            in_flight_queue: BinaryHeap::new(),
-            in_flight_messages: HashMap::new(),
+            in_flight_messages: RwLock::new(InFlightMessages::new()),
         }
     }
 
@@ -50,5 +67,40 @@ impl Channel {
             Ok(_) => {}
             Err(e) => eprintln!("send msg error: {}", e),
         }
+    }
+
+    pub async fn start_in_flight_timeout(
+        &mut self,
+        msg: &mut Message,
+        client_id: u64,
+        timeout: Duration,
+    ) {
+        let now = Instant::now();
+        msg.set_client_id(client_id);
+        msg.set_delivery_ts(now);
+
+        let pri = SystemTime::now()
+            .add(timeout)
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .try_into()
+            .unwrap();
+        msg.set_pri(pri);
+
+        self.push_msg_to_in_flight(msg).await
+    }
+
+    async fn push_msg_to_in_flight(&mut self, msg: &Message) {
+        let mut inf_msg = self.in_flight_messages.write().await;
+
+        let m_c = msg.clone();
+
+        let msg_id = msg.id.clone();
+        inf_msg
+            .in_flight_messages
+            .insert(msg_id.to_string(), msg.clone());
+
+        inf_msg.in_flight_queue.push(m_c);
     }
 }

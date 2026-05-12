@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
+use std::time::Duration;
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt, WriteHalf},
     net::TcpStream,
@@ -20,7 +21,7 @@ const MAGIC: &'static str = "RQV0";
 #[derive(Debug)]
 pub enum EventResp {
     Err(MQError),
-    Msg(Vec<u8>),
+    Msg(Message),
 }
 
 #[derive(Debug, Clone)]
@@ -79,7 +80,8 @@ impl Client {
                         match event {
                             Some(ev) => {
                                 println!("received event: {:?}", ev);
-                                self.send(&mut framed_write, ev).await;
+                                self.send(&mut framed_write, &ev).await;
+                                self.start_in_flight(ev).await
                             }
                             None => {}
                         }
@@ -92,16 +94,16 @@ impl Client {
                                 let resp = self.handle_event(event, msg_sender.clone()).await;
                                 match resp {
                                     Ok(r) => {
-                                        self.send(&mut framed_write, r).await;
+                                        self.send(&mut framed_write, &r).await;
                                     }
                                     Err(e) => {
-                                        self.send(&mut framed_write, EventResp::Err(e)).await;
+                                        self.send(&mut framed_write, &EventResp::Err(e)).await;
                                     }
                                 }
                         }
 
                         Some(Err(e)) => {
-                            self.send(&mut framed_write, EventResp::Err(MQError::IOError(e))).await;
+                            self.send(&mut framed_write, &EventResp::Err(MQError::IOError(e))).await;
                         }
 
                         None => return Ok(()),
@@ -125,7 +127,7 @@ impl Client {
     async fn send(
         &self,
         writer: &mut FramedWrite<WriteHalf<&mut TcpStream>, LengthDelimitedCodec>,
-        event_resp: EventResp,
+        event_resp: &EventResp,
     ) {
         match event_resp {
             EventResp::Err(e) => {
@@ -133,7 +135,7 @@ impl Client {
                     .await
             }
             EventResp::Msg(msg) => {
-                send_framed_response(writer, FrameType::Message, msg).await;
+                send_framed_response(writer, FrameType::Message, encode_msg(msg.clone())).await;
             }
         }
     }
@@ -155,7 +157,7 @@ impl Client {
         self.message_pump1(msg_sender).await;
 
         println!("add client: {} to {}", self.id, topic_name);
-        Ok(EventResp::Msg(b"OK".to_vec()))
+        Ok(EventResp::Msg(Message::new(b"OK".to_vec())))
     }
 
     async fn handle_pub(&mut self, topic: &str, msg: Vec<u8>) -> Result<EventResp, MQError> {
@@ -173,7 +175,7 @@ impl Client {
             Some(t) => {
                 println!("put message: {:?} to topic msg channel", msg);
                 t.put_message(Message::new(msg));
-                Ok(EventResp::Msg(encode_msg(Message::new(b"OK".to_vec()))))
+                Ok(EventResp::Msg(Message::new(b"OK".to_vec())))
             }
             None => return Err(MQError::TopicNotFound("topic: {} not found".to_string())),
         }
@@ -196,10 +198,8 @@ impl Client {
             Some(topic) => topic.get_channel_receiver(&channel),
             None => return,
         };
-
         let chan_receiver = channel_receiver.await;
         drop(mq_read);
-
         if chan_receiver.is_none() {
             return;
         }
@@ -211,7 +211,7 @@ impl Client {
                 match channel_msg_receiver.recv().await {
                     Ok(chan_msg) => {
                         println!("received msg: {:?}", chan_msg);
-                        let _ = tx.send(EventResp::Msg(encode_msg(chan_msg))).await;
+                        let _ = tx.send(EventResp::Msg(chan_msg)).await;
                     }
                     Err(e) => {
                         eprintln!("recv failed: {}", e);
@@ -220,6 +220,31 @@ impl Client {
                 }
             }
         });
+    }
+
+    async fn start_in_flight(&self, ev: EventResp) {
+        if self.chan.is_none() {
+            return;
+        }
+
+        let mut msg = match ev {
+            EventResp::Msg(msg) => msg,
+            _ => return,
+        };
+
+        let t = self.topic.clone();
+        let ch = self.chan.clone();
+        let ch_name = &ch.unwrap();
+
+        let mq = self.mq.write().await;
+        match mq.get_topic(&t.unwrap()) {
+            Some(topic) => {
+                let _ = topic
+                    .start_in_flight(ch_name, &mut msg, self.id, Duration::from_secs(3600))
+                    .await;
+            }
+            None => return,
+        };
     }
 }
 

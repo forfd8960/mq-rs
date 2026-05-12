@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::{
+    cmp::Ordering,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
 use uuid::Uuid;
 
@@ -35,6 +38,30 @@ impl Message {
             index: -1,
             deferred: None,
         }
+    }
+
+    pub fn set_client_id(&mut self, client_id: u64) {
+        self.client_id = Some(client_id)
+    }
+
+    pub fn set_delivery_ts(&mut self, ts: Instant) {
+        self.delivery_ts = Some(ts)
+    }
+
+    pub fn set_pri(&mut self, timeout: i64) {
+        self.pri = Some(timeout)
+    }
+}
+
+impl Ord for Message {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other.pri.cmp(&self.pri)
+    }
+}
+
+impl PartialOrd for Message {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 

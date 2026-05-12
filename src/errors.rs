@@ -18,6 +18,9 @@ pub enum MQError {
     #[error("topic: {0} not found")]
     TopicNotFound(String),
 
+    #[error("channel: {0} not found")]
+    ChannelNotFound(String),
+
     #[error("topic: {0} exists")]
     TopicAlreadyExists(String),
 

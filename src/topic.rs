@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use tokio::sync::{broadcast, mpsc, RwLock};
 
@@ -81,6 +81,24 @@ impl Topic {
         match chan_map.get(channel) {
             Some(chan) => Some(chan.sub_channel()),
             None => None,
+        }
+    }
+
+    // chan.start_in_flight_timeout(msg.clone(), client.ID, msgTimeout)
+    pub async fn start_in_flight(
+        &self,
+        chan_name: &str,
+        msg: &mut Message,
+        c_id: u64,
+        timeout: Duration,
+    ) -> Result<(), MQError> {
+        let mut chan_map = self.chan_map.write().await;
+        match chan_map.get_mut(chan_name) {
+            Some(chan) => {
+                chan.start_in_flight_timeout(msg, c_id, timeout);
+                Ok(())
+            }
+            None => Err(MQError::ChannelNotFound(chan_name.to_string())),
         }
     }
 
