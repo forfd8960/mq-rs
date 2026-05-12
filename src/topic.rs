@@ -124,10 +124,10 @@ impl Topic {
         let mut chan_msg_receiver = self.channel_msg_sender.subscribe();
 
         tokio::spawn(async move {
-            let chans = chan_map.clone();
+            // let chans = chan_map.clone();
             while let Ok(msg) = chan_msg_receiver.recv().await {
                 // fanout to channels
-                for (_, chan) in chans.read().await.iter() {
+                for (_, chan) in chan_map.read().await.iter() {
                     chan.send_msg(msg.clone());
                 }
             }

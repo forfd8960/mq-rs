@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BinaryHeap, HashMap};
 
 use tokio::sync::{broadcast, mpsc};
 
@@ -19,6 +19,8 @@ pub struct Channel {
     // topic broadcasr message to channels
     pub memory_msg_chan: broadcast::Sender<Message>,
     pub clients: HashMap<ClientID, ()>,
+    pub in_flight_queue: BinaryHeap<Message>,
+    pub in_flight_messages: HashMap<String, Message>,
 }
 
 impl Channel {
@@ -29,6 +31,8 @@ impl Channel {
             topic: topic.to_string(),
             memory_msg_chan: tx,
             clients: HashMap::new(),
+            in_flight_queue: BinaryHeap::new(),
+            in_flight_messages: HashMap::new(),
         }
     }
 

@@ -1,15 +1,21 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use uuid::Uuid;
 
 use crate::errors::MQError;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Default)]
 pub struct Message {
     pub id: Uuid,
     pub body: Vec<u8>,
     pub ts: u128, // unix nano
     pub attempts: u16,
+
+    delivery_ts: Option<Instant>,
+    client_id: Option<u64>,
+    pri: Option<i64>, // timeout
+    index: i64,
+    deferred: Option<Duration>,
 }
 
 impl Message {
@@ -23,6 +29,11 @@ impl Message {
             body,
             ts: now_ts,
             attempts: 0,
+            delivery_ts: None,
+            client_id: None,
+            pri: None,
+            index: -1,
+            deferred: None,
         }
     }
 }
@@ -65,10 +76,10 @@ pub fn decode_message(data: &[u8]) -> Result<Message, MQError> {
 
     let body = data[34..].to_vec();
 
-    Ok(Message {
-        id,
-        body,
-        ts,
-        attempts,
-    })
+    let mut msg = Message::new(body);
+    msg.id = id;
+    msg.ts = ts;
+    msg.attempts = attempts;
+
+    Ok(msg)
 }
