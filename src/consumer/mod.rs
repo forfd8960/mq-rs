@@ -80,7 +80,7 @@ async fn read_loop(
                 }
             }
             FrameType::Response => {
-                println!("OK: {}", String::from_utf8_lossy(&data));
+                println!("RESP: {}", String::from_utf8_lossy(&data));
             }
             FrameType::Error => {
                 return Err(MQError::BadResponse(format!(

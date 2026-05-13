@@ -29,4 +29,7 @@ pub enum MQError {
 
     #[error("bad response: {0}")]
     BadResponse(String),
+
+    #[error("disk queue send err: {0}")]
+    DiskQueueError(String),
 }

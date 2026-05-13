@@ -95,7 +95,7 @@ impl Topic {
         let mut chan_map = self.chan_map.write().await;
         match chan_map.get_mut(chan_name) {
             Some(chan) => {
-                chan.start_in_flight_timeout(msg, c_id, timeout);
+                chan.start_in_flight_timeout(msg, c_id, timeout).await;
                 Ok(())
             }
             None => Err(MQError::ChannelNotFound(chan_name.to_string())),

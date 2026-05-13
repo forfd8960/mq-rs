@@ -22,6 +22,7 @@ const MAGIC: &'static str = "RQV0";
 pub enum EventResp {
     Err(MQError),
     Msg(Message),
+    Resp(Vec<u8>),
 }
 
 #[derive(Debug, Clone)]
@@ -136,6 +137,10 @@ impl Client {
             }
             EventResp::Msg(msg) => {
                 send_framed_response(writer, FrameType::Message, encode_msg(msg.clone())).await;
+            }
+
+             EventResp::Resp(resp) => {
+                send_framed_response(writer, FrameType::Response, resp.to_vec()).await;
             }
         }
     }
