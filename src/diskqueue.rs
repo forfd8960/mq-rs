@@ -11,177 +11,174 @@ type diskQueue struct {
     depth        int64
 */
 
-use std::io::SeekFrom;
+use std::fs::{File, OpenOptions};
 use std::path::PathBuf;
-use std::sync::{Arc};
 
-use tokio::fs::OpenOptions;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
-use tokio::sync::oneshot;
-use tokio::{
-    fs::File,
-    sync::{mpsc, RwLock, Mutex},
-};
+use memmap2::{MmapMut, MmapOptions};
 
 use crate::errors::MQError;
 
 pub type Item = Vec<u8>;
 
-#[derive(Debug, Default)]
-struct WriteState {
-    write_pos: i64,
-    write_file_num: i64,
-    depth: i64,
-}
-
 #[derive(Debug)]
 pub struct DiskQueue {
     name: String,
-    read_pos: RwLock<i64>,
+    read_pos: i64,
+    write_pos: i64,
     read_file_num: i64,
+    write_file_num: i64,
     max_bytes_per_file: i64,
 
     data_path: PathBuf,
-    write_chan: mpsc::UnboundedSender<Item>,
-    write_state: Arc<Mutex<WriteState>>,
-    exit_chan_tx: Option<oneshot::Sender<()>>,
+    read_file: Option<File>,
+    write_file: Option<File>,
+    read_map: Option<MmapMut>,
+    write_map: Option<MmapMut>,
 }
 
 impl DiskQueue {
     pub fn new(name: String, data_path: PathBuf, max_bytes_per_file: i64) -> Self {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let write_state = Arc::new(Mutex::new(WriteState::default()));
-        
-        let (exit_tx, exit_rx) = oneshot::channel::<()>();
-        
         let dk = Self {
             name: name.clone(),
-            read_pos: RwLock::new(0),
+            read_pos: 0,
+            write_pos: 0,
             read_file_num: 0,
+            write_file_num: 0,
             max_bytes_per_file,
             data_path: data_path.clone(),
-            write_chan: tx,
-            write_state: Arc::clone(&write_state),
-            exit_chan_tx: Some(exit_tx),
+            read_file: None,
+            write_file: None,
+            read_map: None,
+            write_map: None,
         };
 
-        tokio::spawn(ioloop(name, data_path, max_bytes_per_file, write_state, rx, exit_rx));
         dk
     }
 
-    pub fn put(&self, item: Item) -> Result<(), MQError> {
-        self.write_chan
-            .send(item)
-            .map_err(|e| MQError::DiskQueueError(e.to_string()))
-    }
-
-    pub fn file_name(&self) -> PathBuf {
-        self.data_path.join(format!(
-            "{}.diskqueue.{:06}.dat",
-            self.name, self.read_file_num
-        ))
-    }
-
-    pub async fn write_file_name(&self) -> PathBuf {
-        let write_file_num = self.write_state.lock().await.write_file_num;
+    fn file_name(&self, file_num: i64) -> PathBuf {
         self.data_path
-            .join(format!("{}.diskqueue.{:06}.dat", self.name, write_file_num))
+            .join(format!("{}.diskqueue.{:06}.dat", self.name, file_num))
     }
 
-    pub async fn peek(&mut self) -> Result<Item, MQError> {
-        let mut read_pos = self.read_pos.write().await;
-
-        let mut f = File::open(self.file_name()).await?;
-        let item = read_frame_at(&mut f, *read_pos as u64).await?;
-
-        *read_pos += (4 + item.len()) as i64;
-        Ok(item)
-    }
-
-    pub fn close(&mut self) {
-        if let Some(tx) = self.exit_chan_tx.take() {
-            let _ = tx.send(());
+    fn remap_write(&mut self) -> Result<(), MQError> {
+        if self.write_map.is_some() {
+            return Ok(());
         }
+
+        self.write_file = Some(self.open_file_rw(self.write_file_num)?);
+        let f = self.write_file.as_ref().unwrap();
+        let map = unsafe {
+            MmapOptions::new()
+                .len(self.max_bytes_per_file as usize)
+                .map_mut(f)?
+        };
+        self.write_map = Some(map);
+        Ok(())
     }
-}
 
-async fn open_write_file(name: &str, data_path: &PathBuf, file_num: i64) -> Result<File, MQError> {
-    let path = data_path.join(format!("{}.diskqueue.{:06}.dat", name, file_num));
-    let f = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .await?;
-    Ok(f)
-}
-
-async fn ioloop(
-    name: String,
-    data_path: PathBuf,
-    max_bytes_per_file: i64,
-    write_state: Arc<Mutex<WriteState>>,
-    mut rx: mpsc::UnboundedReceiver<Item>,
-    mut exit_rx: oneshot::Receiver<()>,
-) -> Result<(), MQError> {
-    // Open (or create) the initial write file.
-    let initial_file_num = write_state.lock().await.write_file_num;
-    let mut f = open_write_file(&name, &data_path, initial_file_num).await?;
-
-    loop {
-        tokio::select! {
-            _ = &mut exit_rx => {
-                break;
-            }
-
-            msg = rx.recv() => {
-                match msg {
-                    None => continue,
-                    Some(v) => {
-                        let frame_len = (4 + v.len()) as i64;
-
-                        f.write_all(&(v.len() as u32).to_be_bytes()).await?;
-                        f.write_all(&v).await?;
-
-                        // Update shared state; decide if we need to roll the file.
-                        // The guard must be dropped before any `.await`.
-                        let next_file_num = {
-                            let mut state = write_state.lock().await;
-                            state.write_pos += frame_len;
-                            state.depth += 1;
-
-                            if state.write_pos >= max_bytes_per_file {
-                                state.write_file_num += 1;
-                                state.write_pos = 0;
-                                Some(state.write_file_num)
-                            } else {
-                                None
-                            }
-                        }; // MutexGuard released here
-
-                        if let Some(num) = next_file_num {
-                            f = open_write_file(&name, &data_path, num).await?;
-                        }
-                    }
-                }
-            },
+    fn remap_read(&mut self) -> Result<(), MQError> {
+        if self.read_map.is_some() {
+            return Ok(());
         }
+
+        self.read_file = Some(self.open_file_rw(self.read_file_num)?);
+        let f = self.read_file.as_ref().unwrap();
+        let map = unsafe {
+            MmapOptions::new()
+                .len(self.max_bytes_per_file as usize)
+                .map_mut(f)?
+        };
+        self.read_map = Some(map);
+        Ok(())
     }
 
-    Ok(())
-}
+    fn rotate_write_file(&mut self) -> Result<(), MQError> {
+        if let Some(map) = self.write_map.as_mut() {
+            map.flush()?;
+        }
+        self.write_map = None;
+        self.write_file = None;
 
-async fn read_frame_at(file: &mut File, pos: u64) -> Result<Vec<u8>, MQError> {
-    // Go to the requested position
-    file.seek(SeekFrom::Start(pos)).await?;
+        self.write_file_num += 1;
+        self.write_pos = 0;
+        self.remap_write()
+    }
 
-    // Read 4-byte big-endian length
-    let mut len_buf = [0u8; 4];
-    file.read_exact(&mut len_buf).await?;
-    let len = u32::from_be_bytes(len_buf) as usize;
+    fn rotate_read_file(&mut self) -> Result<(), MQError> {
+        if let Some(map) = self.read_map.as_mut() {
+            map.flush()?;
+        }
+        self.read_map = None;
+        self.read_file = None;
 
-    // Read body
-    let mut body = vec![0u8; len];
-    file.read_exact(&mut body).await?;
+        self.read_file_num += 1;
+        self.read_pos = 0;
+        self.remap_read()
+    }
 
-    Ok(body)
+    fn open_file_rw(&self, file_num: i64) -> Result<File, MQError> {
+        let path = self.file_name(file_num);
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        // Make file fixed-size for mmap
+        file.set_len(self.max_bytes_per_file as u64)?;
+        Ok(file)
+    }
+
+    pub fn enqueue(&mut self, item: Item) -> Result<(), MQError> {
+        self.remap_write()?;
+
+        let item_len = item.len();
+
+        let write_start = self.write_pos as usize;
+        let end_len = 4usize + write_start;
+        let end_payload = end_len + item_len;
+
+        let w_map = self.write_map.as_mut().unwrap();
+
+        let len_bs = (item_len as u32).to_be_bytes();
+        w_map[write_start..end_len].copy_from_slice(&len_bs);
+        w_map[end_len..end_payload].copy_from_slice(&item);
+
+        let record_size = 4 + item_len;
+        w_map.flush_range(write_start, record_size)?;
+        self.write_pos += record_size as i64;
+
+        Ok(())
+    }
+
+    pub async fn dequeue(&mut self) -> Result<Item, MQError> {
+        self.remap_read()?;
+
+        let r_map = self.read_map.as_ref().unwrap();
+        let start = self.read_pos as usize;
+
+        let mut len_bs = [0u8; 4];
+        len_bs.copy_from_slice(&r_map[start..start+4]);
+        let item_len = u32::from_be_bytes(len_bs);
+
+        let record_size = 4 + item_len;
+        let end = start as u32 + record_size;
+
+        let data = &r_map[start+4..end as usize].to_vec();
+        self.read_pos += record_size as i64;
+
+        Ok(data.clone())
+    }
+
+    pub fn close(&mut self) -> Result<(), MQError>{
+        if let Some(map) = self.write_map.as_mut() {
+            map.flush()?;
+        }
+
+        self.write_map = None;
+        self.read_map = None;
+        self.write_file = None;
+        self.read_file = None;
+
+        Ok(())
+    }
 }
