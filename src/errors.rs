@@ -21,8 +21,14 @@ pub enum MQError {
     #[error("channel: {0} not found")]
     ChannelNotFound(String),
 
+    #[error("msg: {0} not sent to client")]
+    MessageNotOwned(String),
+
     #[error("topic: {0} exists")]
     TopicAlreadyExists(String),
+
+    #[error("client not sub to topic yet")]
+    ClientNoSub,
 
     #[error("bad protocol")]
     BadProtocol,

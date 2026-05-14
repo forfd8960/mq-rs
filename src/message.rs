@@ -44,6 +44,10 @@ impl Message {
         self.client_id = Some(client_id)
     }
 
+    pub fn client_id(&self) -> Option<u64> {
+        self.client_id
+    }
+
     pub fn set_delivery_ts(&mut self, ts: Instant) {
         self.delivery_ts = Some(ts)
     }

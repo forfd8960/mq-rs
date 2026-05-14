@@ -84,7 +84,6 @@ impl Topic {
         }
     }
 
-    // chan.start_in_flight_timeout(msg.clone(), client.ID, msgTimeout)
     pub async fn start_in_flight(
         &self,
         chan_name: &str,
@@ -96,6 +95,22 @@ impl Topic {
         match chan_map.get_mut(chan_name) {
             Some(chan) => {
                 chan.start_in_flight_timeout(msg, c_id, timeout).await;
+                Ok(())
+            }
+            None => Err(MQError::ChannelNotFound(chan_name.to_string())),
+        }
+    }
+
+    pub async fn finish_message(
+        &self,
+        chan_name: &str,
+        c_id: ClientID,
+        msg_id: &str,
+    ) -> Result<(), MQError> {
+        let mut chan_map = self.chan_map.write().await;
+        match chan_map.get_mut(chan_name) {
+            Some(chan) => {
+                chan.finish_message(c_id, msg_id).await?;
                 Ok(())
             }
             None => Err(MQError::ChannelNotFound(chan_name.to_string())),

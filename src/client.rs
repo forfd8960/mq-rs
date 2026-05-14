@@ -17,6 +17,7 @@ use crate::{
 
 pub type ClientID = u64;
 const MAGIC: &'static str = "RQV0";
+const RESP_OK: &'static [u8; 2] = b"OK";
 
 #[derive(Debug)]
 pub enum EventResp {
@@ -119,9 +120,12 @@ impl Client {
         ev: Event,
         msg_sender: mpsc::Sender<EventResp>,
     ) -> Result<EventResp, MQError> {
+        println!("handling event: {:?}", ev);
+
         match ev {
             Event::PUB { topic, msg } => self.handle_pub(&topic, msg).await,
             Event::SUB { topic, channel } => self.handle_sub(&topic, &channel, msg_sender).await,
+            Event::FIN { msg_id } => self.handle_fin(&msg_id).await,
         }
     }
 
@@ -139,7 +143,7 @@ impl Client {
                 send_framed_response(writer, FrameType::Message, encode_msg(msg.clone())).await;
             }
 
-             EventResp::Resp(resp) => {
+            EventResp::Resp(resp) => {
                 send_framed_response(writer, FrameType::Response, resp.to_vec()).await;
             }
         }
@@ -162,7 +166,7 @@ impl Client {
         self.message_pump1(msg_sender).await;
 
         println!("add client: {} to {}", self.id, topic_name);
-        Ok(EventResp::Msg(Message::new(b"OK".to_vec())))
+        Ok(EventResp::Resp(RESP_OK.to_vec()))
     }
 
     async fn handle_pub(&mut self, topic: &str, msg: Vec<u8>) -> Result<EventResp, MQError> {
@@ -180,7 +184,27 @@ impl Client {
             Some(t) => {
                 println!("put message: {:?} to topic msg channel", msg);
                 t.put_message(Message::new(msg));
-                Ok(EventResp::Msg(Message::new(b"OK".to_vec())))
+                Ok(EventResp::Resp(RESP_OK.to_vec()))
+            }
+            None => return Err(MQError::TopicNotFound("topic: {} not found".to_string())),
+        }
+    }
+
+    async fn handle_fin(&self, msg_id: &str) -> Result<EventResp, MQError> {
+        let mq = self.mq.read().await;
+        if self.topic.is_none() || self.chan.is_none() {
+            return Err(MQError::ClientNoSub);
+        }
+
+        let topic_name = self.topic.clone();
+        let ch = self.chan.clone();
+
+        match mq.get_topic(&topic_name.unwrap()) {
+            Some(t) => {
+                t.finish_message(&ch.unwrap(), self.id, msg_id).await?;
+
+                println!("msg is been acked");
+                Ok(EventResp::Resp(RESP_OK.to_vec()))
             }
             None => return Err(MQError::TopicNotFound("topic: {} not found".to_string())),
         }

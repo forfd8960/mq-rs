@@ -1,3 +1,4 @@
+use bytes::{Bytes, BytesMut};
 use futures::{SinkExt, StreamExt};
 use tokio::io::{self, AsyncWriteExt, ReadHalf};
 use tokio::net::TcpStream;
@@ -10,11 +11,9 @@ use crate::protocol::{build_r_w_codec, decode_server_frame, encode_sub, FrameTyp
 
 const MAGIC: &[u8; 4] = b"RQV0";
 
-pub async fn consume(
+pub async fn commnunicate(
     stream: TcpStream,
-    topic: &str,
-    channel: &str,
-) -> Result<mpsc::Receiver<Message>, MQError> {
+) -> Result<(mpsc::Receiver<Message>, mpsc::Sender<BytesMut>), MQError> {
     // 1) write MAGIC first
     let mut stream = stream;
     stream.write_all(MAGIC).await?;
@@ -29,11 +28,18 @@ pub async fn consume(
     let mut reader = FramedRead::new(read_half, read_codec);
     let mut writer = FramedWrite::new(write_half, write_codec);
 
-    // 4) send SUB command via encoder
-    let sub_cmd = encode_sub(topic, channel); // e.g. SUB orders analysis\n
-    writer.send(sub_cmd.freeze()).await?;
+    let (cmd_sender, mut cmd_receiver) = mpsc::channel::<BytesMut>(1000);
 
-    println!("subed to {}->{}", topic, channel);
+    // 4) send SUB command via encoder
+    // let sub_cmd = encode_sub(topic, channel); // e.g. SUB orders analysis\n
+    tokio::spawn(async move {
+        while let Some(cmd) = cmd_receiver.recv().await {
+            match writer.send(cmd.freeze()).await {
+                Ok(_) => {}
+                Err(e) => eprintln!("send cmd failed: {}", e),
+            }
+        }
+    });
 
     let (tx, rx) = mpsc::channel::<Message>(1000);
 
@@ -47,7 +53,7 @@ pub async fn consume(
         }
     });
 
-    Ok(rx)
+    Ok((rx, cmd_sender))
 }
 
 async fn read_loop(

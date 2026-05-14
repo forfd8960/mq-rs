@@ -45,11 +45,18 @@ impl From<FrameType> for u32 {
 pub enum Event {
     PUB { topic: String, msg: Vec<u8> },
     SUB { topic: String, channel: String },
+    FIN { msg_id: String },
 }
 
 /// Common command encoder for SUB / PUB line commands.
 pub fn encode_sub(topic: &str, channel: &str) -> BytesMut {
     let line = format!("SUB {topic} {channel}\n");
+    BytesMut::from(line.as_bytes())
+}
+
+/// Common command encoder for SUB / PUB line commands.
+pub fn encode_fin(msg_id: &str) -> BytesMut {
+    let line = format!("FIN {msg_id}\n");
     BytesMut::from(line.as_bytes())
 }
 
@@ -94,18 +101,23 @@ pub fn decode_line_to_event(payload: BytesMut) -> Result<Event, MQError> {
                 msg: msg_bs.to_vec(),
             })
         }
+
         b"SUB" => {
             let topic = bytes_to_string(parts[1])?;
             let channel = bytes_to_string(parts[2])?;
             Ok(Event::SUB { topic, channel })
+        }
+
+        b"FIN" => {
+            let msg_id = bytes_to_string(parts[1])?;
+            Ok(Event::FIN { msg_id })
         }
         _ => Err(MQError::UnknowEvent(bytes_to_string(parts[0])?)),
     }
 }
 
 fn bytes_to_string(bs: &[u8]) -> Result<String, MQError> {
-    String::from_utf8(bs.to_vec())
-        .map_err(|_e| MQError::BadEventPayload("not valid topic name".to_string()))
+    String::from_utf8(bs.to_vec()).map_err(|e| MQError::BadEventPayload(e.to_string()))
 }
 
 pub fn build_r_w_codec() -> (LengthDelimitedCodec, LengthDelimitedCodec) {

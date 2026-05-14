@@ -103,4 +103,41 @@ impl Channel {
 
         inf_msg.in_flight_queue.push(m_c);
     }
+
+    /*
+        func (c *Channel) FinishMessage(clientID int64, id MessageID) error {
+        msg, err := c.popInFlightMessage(clientID, id)
+        if err != nil {
+            return err
+        }
+        c.removeFromInFlightPQ(msg)
+        if c.e2eProcessingLatencyStream != nil {
+            c.e2eProcessingLatencyStream.Insert(msg.Timestamp)
+        }
+        return nil
+    }
+        */
+    pub async fn finish_message(&mut self, c_id: ClientID, msg_id: &str) -> Result<(), MQError> {
+        let _ = self.pop_in_flight_msg(c_id, msg_id).await?;
+        //todo: remove from in_flight_queue
+        Ok(())
+    }
+    async fn pop_in_flight_msg(
+        &mut self,
+        c_id: ClientID,
+        msg_id: &str,
+    ) -> Result<Option<Message>, MQError> {
+        let mut inf_msg = self.in_flight_messages.write().await;
+
+        let msg = inf_msg.in_flight_messages.remove(msg_id);
+        match msg {
+            Some(m) => {
+                if m.client_id() != Some(c_id) {
+                    return Err(MQError::MessageNotOwned(msg_id.to_string()));
+                }
+                Ok(Some(m))
+            }
+            None => Ok(None),
+        }
+    }
 }
