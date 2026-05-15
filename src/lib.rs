@@ -1,11 +1,11 @@
 pub mod channel;
 pub mod client;
 pub mod consumer;
+pub mod diskqueue;
 pub mod errors;
+pub mod http_server;
 pub mod message;
 pub mod mq;
 pub mod producer;
 pub mod protocol;
 pub mod topic;
-pub mod http_server;
-pub(crate) mod diskqueue;
