@@ -1,5 +1,6 @@
-use std::fs::{File, OpenOptions};
+use std::fs::{read, File, OpenOptions};
 use std::future::Future;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 
 use memmap2::{MmapMut, MmapOptions};
@@ -12,6 +13,14 @@ pub type Item = Vec<u8>;
 pub trait Queue {
     fn enque(&mut self, item: Item) -> impl Future<Output = Result<(), MQError>> + Send;
     fn deque(&mut self) -> impl Future<Output = Result<Item, MQError>> + Send;
+}
+
+#[derive(Debug, Default)]
+struct Metadata {
+    read_pos: i64,
+    write_pos: i64,
+    read_file_num: i64,
+    write_file_num: i64,
 }
 
 #[derive(Debug)]
@@ -32,7 +41,7 @@ pub struct DiskQueue {
 
 impl DiskQueue {
     pub fn new(name: String, data_path: PathBuf, max_bytes_per_file: i64) -> Self {
-        let dk = Self {
+        let mut dk = Self {
             name: name.clone(),
             read_pos: RwLock::new(0),
             write_pos: RwLock::new(0),
@@ -46,12 +55,50 @@ impl DiskQueue {
             write_map: None,
         };
 
+        match load_metadata(&name, &data_path) {
+            Ok(meta) => {
+                dk.read_pos = RwLock::new(meta.read_pos);
+                dk.write_pos = RwLock::new(meta.write_pos);
+                dk.read_file_num = meta.read_file_num;
+                dk.write_file_num = meta.write_file_num;
+            }
+            _ => {}
+        };
+
         dk
     }
 
     fn file_name(&self, file_num: i64) -> PathBuf {
         self.data_path
             .join(format!("{}.diskqueue.{:06}.dat", self.name, file_num))
+    }
+
+    async fn encode_metadata(&self) -> Result<(), MQError> {
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .truncate(true)
+            .open(metadata_file(&self.name, &self.data_path))?;
+
+        let mut buf: Vec<u8> = Vec::with_capacity(32);
+        let bs1 = {
+            let read_pos = self.read_pos.read().await;
+            (*read_pos).to_be_bytes()
+        };
+        buf.extend_from_slice(&bs1);
+
+        let bs2 = {
+            let pos = self.write_pos.read().await;
+            (*pos).to_be_bytes()
+        };
+        buf.extend_from_slice(&bs2);
+
+        buf.extend_from_slice(&self.read_file_num.to_be_bytes());
+        buf.extend_from_slice(&self.write_file_num.to_be_bytes());
+
+        file.write_all(&buf)?;
+
+        Ok(())
     }
 
     fn remap_write(&mut self) -> Result<(), MQError> {
@@ -100,24 +147,23 @@ impl DiskQueue {
 
         self.write_file_num += 1;
         {
-             let mut write_pos = self.write_pos.write().await;
-             *write_pos = 0;
+            let mut write_pos = self.write_pos.write().await;
+            *write_pos = 0;
         }
         self.remap_write()
     }
 
     async fn rotate_read_file(&mut self) -> Result<(), MQError> {
-        
         if let Some(map) = self.read_map.as_mut() {
             map.flush()?;
         }
         self.read_map = None;
         self.read_file = None;
         self.read_file_num += 1;
-        
+
         {
             let mut read_pos = self.read_pos.write().await;
-             *read_pos = 0;
+            *read_pos = 0;
         }
         self.remap_read()
     }
@@ -146,8 +192,8 @@ impl DiskQueue {
         let item_len = item.len();
 
         let write_pos = {
-             let pos = self.write_pos.read().await;
-             *pos
+            let pos = self.write_pos.read().await;
+            *pos
         };
 
         if 4usize + write_pos as usize + item_len > self.max_bytes_per_file as usize {
@@ -159,15 +205,15 @@ impl DiskQueue {
 
         let end_len = 4 + write_start;
         let end_payload = end_len + item_len;
-        
+
         let w_map = self.write_map.as_mut().unwrap();
         let len_bs = (item_len as u32).to_be_bytes();
         w_map[write_start..end_len].copy_from_slice(&len_bs);
         w_map[end_len..end_payload].copy_from_slice(&item);
-        
+
         let record_size = 4 + item_len;
         w_map.flush_range(write_start, record_size)?;
-        
+
         *write_pos1 += record_size as i64;
         Ok(())
     }
@@ -202,10 +248,9 @@ impl DiskQueue {
         let item_len = u32::from_be_bytes(len_bs);
         let record_size = 4 + item_len;
         let end = start as u32 + record_size;
-        
-        let data = &r_map[start+4..end as usize].to_vec();
+
+        let data = &r_map[start + 4..end as usize].to_vec();
         {
-            
             let mut read_pos = self.read_pos.write().await;
             *read_pos += record_size as i64;
         }
@@ -213,10 +258,12 @@ impl DiskQueue {
         Ok(data.clone())
     }
 
-    pub fn close(&mut self) -> Result<(), MQError> {
+    pub async fn close(&mut self) -> Result<(), MQError> {
         if let Some(map) = self.write_map.as_mut() {
             map.flush()?;
         }
+
+        self.encode_metadata().await?;
 
         self.write_map = None;
         self.read_map = None;
@@ -225,4 +272,35 @@ impl DiskQueue {
 
         Ok(())
     }
+}
+
+fn metadata_file(name: &str, data_path: &PathBuf) -> PathBuf {
+    data_path.join(format!("{}.diskqueue.meta.dat", name))
+}
+
+fn load_metadata(name: &str, data_path: &PathBuf) -> Result<Metadata, MQError> {
+    let mut file = File::open(metadata_file(name, data_path))?;
+    let mut buf = [0u8; 32];
+    file.read_exact(&mut buf)?;
+
+    let mut bytes = [0u8; 8];
+
+    bytes.copy_from_slice(&buf[0..8]);
+    let read_pos = i64::from_be_bytes(bytes);
+
+    bytes.copy_from_slice(&buf[8..16]);
+    let write_pos = i64::from_be_bytes(bytes);
+
+    bytes.copy_from_slice(&buf[16..24]);
+    let read_file_num = i64::from_be_bytes(bytes);
+
+    bytes.copy_from_slice(&buf[24..32]);
+    let write_file_num = i64::from_be_bytes(bytes);
+
+    Ok(Metadata {
+        read_pos,
+        write_pos,
+        read_file_num,
+        write_file_num,
+    })
 }
