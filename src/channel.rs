@@ -104,19 +104,6 @@ impl Channel {
         inf_msg.in_flight_queue.push(m_c);
     }
 
-    /*
-        func (c *Channel) FinishMessage(clientID int64, id MessageID) error {
-        msg, err := c.popInFlightMessage(clientID, id)
-        if err != nil {
-            return err
-        }
-        c.removeFromInFlightPQ(msg)
-        if c.e2eProcessingLatencyStream != nil {
-            c.e2eProcessingLatencyStream.Insert(msg.Timestamp)
-        }
-        return nil
-    }
-        */
     pub async fn finish_message(&mut self, c_id: ClientID, msg_id: &str) -> Result<(), MQError> {
         let _ = self.pop_in_flight_msg(c_id, msg_id).await?;
         //todo: remove from in_flight_queue

@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt, WriteHalf},
     net::TcpStream,
@@ -211,17 +211,15 @@ impl Client {
     }
 
     async fn message_pump1(&self, tx: mpsc::Sender<EventResp>) {
-        let topic_name = match self.topic.clone() {
-            Some(topic) => topic,
-            None => return,
-        };
+        if self.topic.is_none() || self.chan.is_none() {
+            return;
+        }
 
-        let channel = match self.chan.clone() {
-            Some(chan) => chan,
-            None => return,
-        };
+        let topic_name = self.topic.clone().unwrap();
+        let channel = self.chan.clone().unwrap();
 
-        let mq_clone = self.mq.clone();
+
+        let mq_clone = Arc::clone(&self.mq);
         let mq_read = mq_clone.read().await;
         let channel_receiver = match mq_read.get_topic(&topic_name) {
             Some(topic) => topic.get_channel_receiver(&channel),

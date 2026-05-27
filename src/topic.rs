@@ -1,21 +1,23 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, path::PathBuf, sync::{Arc, atomic::{AtomicU64, Ordering}}, time::Duration};
 
 use tokio::sync::{broadcast, mpsc, RwLock};
 
 use crate::{
-    channel::{Channel, SlimChannel},
-    client::ClientID,
-    errors::MQError,
-    message::Message,
+    channel::{Channel, SlimChannel}, client::ClientID, diskqueue::{DiskQueue, Queue}, errors::MQError, message::{Message, encode_msg}
 };
 
 pub type MsgSender = mpsc::Sender<Message>;
+
+const DATA_PATH: &'static str = "./data";
+const MAX_BYTES_PER_FILE: u64 = 1024 * 1024;
 
 #[derive(Debug)]
 pub struct Topic {
     pub name: String,
     pub msg_count: u64,
     pub msg_size: u64,
+    pub diskqueue: DiskQueue,
+    pub send_msg_count: u64,
 
     // topic receive message and send
     // protocol call topic to put message into sender
@@ -33,12 +35,15 @@ pub struct Topic {
 
 impl Topic {
     pub async fn new(name: &str, msg_cap: usize) -> Self {
+        let t_name = name.to_string();
         let (msg_chan_sender, msg_chan_recv) = mpsc::channel::<Message>(msg_cap);
         let (chan_msg_sender, chan_msg_receiver) = broadcast::channel::<Message>(msg_cap);
         let topic = Topic {
             name: name.to_string(),
             msg_count: 0,
             msg_size: 0,
+            send_msg_count: 0,
+            diskqueue: DiskQueue::new(t_name, PathBuf::from(DATA_PATH), MAX_BYTES_PER_FILE as i64),
             memory_msg_chan_sender: msg_chan_sender,
             memory_msg_chan_recv: msg_chan_recv,
             channel_msg_sender: chan_msg_sender,

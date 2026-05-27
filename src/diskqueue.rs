@@ -304,3 +304,14 @@ fn load_metadata(name: &str, data_path: &PathBuf) -> Result<Metadata, MQError> {
         write_file_num,
     })
 }
+
+
+impl Queue for DiskQueue {
+    fn deque(&mut self) -> impl Future<Output = Result<Item, MQError>> + Send {
+        self.deque()
+    }
+
+    fn enque(&mut self, item: Item) -> impl Future<Output = Result<(), MQError>> + Send {
+        self.enque(item)
+    }
+}
